@@ -10,7 +10,7 @@ import "@openzeppelin/contracts/utils/Pausable.sol";
 import "./interfaces/IMintableERC20.sol";
 
 /**
- * @title QubeBridge - v3.6
+ * @title QubeBridge - v3.7
  * @author Mabble Protocol (@muroko)
  * @notice QubeBridge is a cross-chain Bridge
  * @custom:security-contact security@mabble.io
@@ -48,6 +48,9 @@ contract QubeBridge is Ownable, ReentrancyGuard, Pausable {
 
     // Track which tokens are mintable (optional)
     mapping(address => bool) private _mintableTokens;
+
+    // Track processed transactions to prevent replay attacks
+    mapping(bytes32 => bool) private _processedTransactions;
 
     // --- Events ---
     event Bridge(
@@ -123,7 +126,6 @@ contract QubeBridge is Ownable, ReentrancyGuard, Pausable {
         address destinationAddress,
         uint256 amount,
         uint256 destChainId
-        //uint256 deadline
     ) external payable nonReentrant whenNotPaused {
         require(amount >= minAmount, "Bridge: slippage too high");
         require(destChainId != srcChainId, "Bridge: same chain");
@@ -195,6 +197,8 @@ contract QubeBridge is Ownable, ReentrancyGuard, Pausable {
         require(msg.sender == multisig || msg.sender == controller, "Bridge: unauthorized");
         require(recipient != address(0), "Bridge: invalid recipient");
         require(isSupportedChain(fromChainId), "Bridge: source chain not supported");
+        require(!_processedTransactions[srcTxHash], "Bridge: transaction already processed");
+        _processedTransactions[srcTxHash] = true;
 
         // Deduct locked ETH / locked tokens
         if (tokenAddress == address(0)) {
@@ -323,11 +327,11 @@ contract QubeBridge is Ownable, ReentrancyGuard, Pausable {
 
     // --- Fallback/Receive ---
     receive() external payable {
-        revert("Bridge: ETH transfers not allowed (use bridge())");
+        revert("Bridge: Bypass transfers not allowed (use bridge())");
     }
 
     fallback() external payable {
-        revert("Bridge: ETH transfers not allowed (use bridge())");
+        revert("Bridge: Bypass transfers not allowed (use bridge())");
     }
 
     // --- Setters ---
