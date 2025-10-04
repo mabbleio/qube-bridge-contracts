@@ -10,7 +10,7 @@ import "@openzeppelin/contracts/utils/Pausable.sol";
 import "./interfaces/IMintableERC20.sol";
 
 /**
- * @title QubeBridge - v3.5
+ * @title QubeBridge - v3.6
  * @author Mabble Protocol (@muroko)
  * @notice QubeBridge is a cross-chain Bridge
  * @custom:security-contact security@mabble.io
@@ -24,8 +24,10 @@ contract QubeBridge is Ownable, ReentrancyGuard, Pausable {
     address public controller;
     address public multisig;
     address public feeRecipient;  // Address to receive bridge fees
-    uint256 public feePercent;
+    uint256 public feePercent = 200; // Default bridge Fee in basis points (e.g., 2% = 200)
+    uint256 public minAmount = 0.01 * 1e18; // Minimum bridge amount (0.01 token)
     uint256 public unpauseDelay = 48 hours;
+    uint256 public deadline = 10 * 60; // 10min
     uint256 private _unpauseTime;
     bool private _paused;  // Pause state
 
@@ -70,14 +72,15 @@ contract QubeBridge is Ownable, ReentrancyGuard, Pausable {
     );
     event TokenSupportUpdated(address indexed token, bool isSupported);
     event ChainSupportUpdated(uint256 indexed chainId, bool isSupported);
-    event FeePercentUpdated(uint256 newPercent);
+    event FeePercentUpdated(uint256 newFeePercent);
     event FeeRecipientUpdated(address newRecipient);  // Track fee recipient changes
     event ControllerUpdated(address newController);
     event MultisigUpdated(address newMultisig);
     event TokensWithdrawn(address indexed token, address indexed to, uint256 amount);
     event ETHWithdrawn(address indexed to, uint256 amount);
-    // event TokenMintableStatusUpdated(address indexed token, bool isMintable);
     event MintableTokenUpdated(address indexed token, bool isMintable);
+    event MinAmountChanged(uint256 newMinAmount);
+    event DeadlineChanged(uint256 newDeadline);
 
     // --- Modifiers ---
     modifier onlyBridge() {
@@ -100,7 +103,6 @@ contract QubeBridge is Ownable, ReentrancyGuard, Pausable {
         controller = _controller;
         multisig = _multisig;
         feeRecipient = _feeRecipient == address(0) ? _controller : _feeRecipient;
-        feePercent = 0;
 
         // Automatically support the source chain
         _addSupportedChain(_srcChainId);
@@ -120,9 +122,8 @@ contract QubeBridge is Ownable, ReentrancyGuard, Pausable {
         address tokenAddress,
         address destinationAddress,
         uint256 amount,
-        uint256 destChainId,
-        uint256 minAmount,
-        uint256 deadline
+        uint256 destChainId
+        //uint256 deadline
     ) external payable nonReentrant whenNotPaused {
         require(amount >= minAmount, "Bridge: slippage too high");
         require(destChainId != srcChainId, "Bridge: same chain");
@@ -225,26 +226,7 @@ contract QubeBridge is Ownable, ReentrancyGuard, Pausable {
         }
     }
 
-    /**
-    * @dev Mark a token as mintable (must implement IMintableERC20).
-    * @param token Address of the token.
-    * @param isMintable Whether the token supports minting/burning.
-    */
-    function setMintableToken(address token, bool isMintable) external nonReentrant {
-        require(msg.sender == controller, "Bridge: unauthorized");
-        require(isSupportedToken(token), "Bridge: token not supported");
-        _mintableTokens[token] = isMintable;
-        emit MintableTokenUpdated(token, isMintable);
-    }
-
     // --- Admin Functions ---
-    function updateFeeRecipient(address newRecipient) external nonReentrant {
-        require(msg.sender == controller, "Bridge: unauthorized");
-        require(newRecipient != address(0), "Bridge: invalid recipient");
-        feeRecipient = newRecipient;
-        emit FeeRecipientUpdated(newRecipient);
-    }
-
     function addSupportedToken(address token) external nonReentrant {
         require(msg.sender == controller, "Bridge: unauthorized");
         require(token != address(0), "Bridge: invalid token");
@@ -314,14 +296,14 @@ contract QubeBridge is Ownable, ReentrancyGuard, Pausable {
 
     // --- Withdrawals ---
     function withdrawERC20(address tokenAddress, address to) external nonReentrant whenPaused {
-        require(msg.sender == controller, "Bridge: unauthorized");
+        require(msg.sender == multisig || msg.sender == controller, "Bridge: unauthorized");
         uint256 amount = IERC20(tokenAddress).balanceOf(address(this));
         IERC20(tokenAddress).safeTransfer(to, amount);
         emit TokensWithdrawn(tokenAddress, to, amount);
     }
 
     function withdrawETH(address payable to) external nonReentrant whenPaused {
-        require(msg.sender == controller, "Bridge: unauthorized");
+        require(msg.sender == multisig || msg.sender == controller, "Bridge: unauthorized");
         payable(to).transfer(address(this).balance);
         emit ETHWithdrawn(to, address(this).balance);
     }
@@ -349,20 +331,51 @@ contract QubeBridge is Ownable, ReentrancyGuard, Pausable {
     }
 
     // --- Setters ---
+    function setMinAmount(uint256 _minAmount) external nonReentrant {
+        require(msg.sender == controller, "Bridge: unauthorized");
+        minAmount = _minAmount;
+        emit MinAmountChanged(_minAmount);
+    }
+
+    function setDeadline(uint256 _deadline) external nonReentrant {
+        require(msg.sender == controller, "Bridge: unauthorized");
+        deadline = _deadline;
+        emit DeadlineChanged(_deadline);
+    }
+
+    /**
+    * @dev Mark a token as mintable (must implement IMintableERC20).
+    * @param token Address of the token.
+    * @param isMintable Whether the token supports minting/burning.
+    */
+    function setMintableToken(address token, bool isMintable) external nonReentrant {
+        require(msg.sender == controller, "Bridge: unauthorized");
+        require(isSupportedToken(token), "Bridge: token not supported");
+        _mintableTokens[token] = isMintable;
+        emit MintableTokenUpdated(token, isMintable);
+    }
+
     function updateFeePercent(uint256 newPercent) external nonReentrant {
         require(msg.sender == controller, "Bridge: unauthorized");
         feePercent = newPercent;
         emit FeePercentUpdated(newPercent);
     }
 
-    function updateController(address newController) external nonReentrant {
+    function updateFeeRecipient(address newRecipient) external nonReentrant {
         require(msg.sender == controller, "Bridge: unauthorized");
+        require(newRecipient != address(0), "Bridge: invalid recipient");
+        feeRecipient = newRecipient;
+        emit FeeRecipientUpdated(newRecipient);
+    }
+
+    function updateController(address newController) external nonReentrant {
+        require(msg.sender == multisig || msg.sender == controller, "Bridge: unauthorized");
         controller = newController;
         emit ControllerUpdated(newController);
     }
 
     function updateMultisig(address newMultisig) external nonReentrant {
-        require(msg.sender == controller, "Bridge: unauthorized");
+        require(msg.sender == multisig || msg.sender == controller, "Bridge: unauthorized");
         multisig = newMultisig;
         emit MultisigUpdated(newMultisig);
     }
