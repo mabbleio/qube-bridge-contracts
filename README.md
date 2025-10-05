@@ -5,7 +5,8 @@ Qube Bridge Contracts
 ## Notice
 QubeBridge is a Secure Custom Private Bridge operated by Mabble Protocol
 used solely by QubeSwap Dex for its users to Bridge Assets and Trade.
-The Bridge work flow relied on a Backend Processor Server.
+The Bridge work flow relied on a Backend Processor Server off-chain 
+validation and a multisig for admin operations.
 
 
 

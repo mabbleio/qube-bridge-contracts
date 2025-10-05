@@ -10,12 +10,13 @@ import "@openzeppelin/contracts/utils/Pausable.sol";
 import "./interfaces/IMintableERC20.sol";
 
 /**
- * @title QubeBridge - v3.9
+ * @title QubeBridge - v4.0
  * @author Mabble Protocol (@muroko)
- * @notice QubeBridge is a cross-chain Bridge with selected chains
+ * @notice QubeBridge is a cross-chain Bridge on supported chains
  * @notice QubeBridge is a Secure Custom Private Bridge operated by Mabble Protocol
  * used solely by QubeSwap Dex for its users to Bridge Assets and Trade.
- * The Bridge work flow relied on a Backend Processor Server.
+ * The Bridge work flow relied on a Backend Processor Server off-chain
+ * validation and a multisig for admin operations.
  * @custom:security-contact security@mabble.io
  * Website: qubeswap.com
 */
@@ -52,7 +53,7 @@ contract QubeBridge is Ownable, ReentrancyGuard, Pausable {
     // Nonce tracking per (fromChainId => toChainId)
     mapping(uint256 => mapping(uint256 => uint256)) public nonces;
 
-    // Track locked ETH and tokens per user
+    // Track locked Native Chain Token and ERC20 tokens per user
     mapping(address => uint256) private _lockedETH;
     mapping(address => mapping(address => uint256)) private _lockedTokens;
 
@@ -201,7 +202,7 @@ contract QubeBridge is Ownable, ReentrancyGuard, Pausable {
         );
     }
 
-    function sendToken(
+    function transferToken(
         address tokenAddress,
         address recipient,
         uint256 amount,
