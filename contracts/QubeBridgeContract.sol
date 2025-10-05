@@ -10,7 +10,7 @@ import "@openzeppelin/contracts/utils/Pausable.sol";
 import "./interfaces/IMintableERC20.sol";
 
 /**
- * @title QubeBridge - v4.0
+ * @title QubeBridge - v4.1
  * @author Mabble Protocol (@muroko)
  * @notice QubeBridge is a cross-chain Bridge on supported chains
  * @notice QubeBridge is a Secure Custom Private Bridge operated by Mabble Protocol
