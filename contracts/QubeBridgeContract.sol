@@ -34,7 +34,7 @@ contract QubeBridge is Ownable, ReentrancyGuard, Pausable {
     uint256 public feePercent = 200; // Default bridge Fee in basis points (e.g., 2% = 200)
     uint256 public minAmount = 0.01 * 1e18; // Minimum bridge amount (0.01 token)
     uint256 public unpauseDelay = 48 hours;
-    uint256 public deadline = 10 * 60; // 10min
+    uint256 public deadline = 5 * 60; // 5min
     uint256 private _unpauseTime;
 
     // Track count for enumeration
@@ -178,7 +178,11 @@ contract QubeBridge is Ownable, ReentrancyGuard, Pausable {
         } else {
             if (_mintableTokens[tokenAddress]) {
                 // Burn tokens from user instead of transferring to bridge
-                IMintableERC20(tokenAddress).burn(msg.sender, amount);
+                try IMintableERC20(tokenAddress).burn(msg.sender, amount) {
+                    // Burn successful, proceed with fee transfer
+                } catch {
+                    revert("Bridge: burn failed (not mintable)");
+                }
                 // Transfer fee separately (if needed)
                 IERC20(tokenAddress).safeTransferFrom(msg.sender, feeRecipient, feeAmount);
             } else {
@@ -239,7 +243,11 @@ contract QubeBridge is Ownable, ReentrancyGuard, Pausable {
         } else {
             if (_mintableTokens[tokenAddress]) {
                 // Mint tokens instead of transferring from bridge's balance
-                IMintableERC20(tokenAddress).mint(recipient, amount);
+                try IMintableERC20(tokenAddress).mint(recipient, amount) {
+                    // Success: proceed
+                } catch {
+                    revert("Bridge: token mint failed");
+                }
             } else {
                 IERC20(tokenAddress).safeTransfer(recipient, amount);
             }
@@ -332,6 +340,19 @@ contract QubeBridge is Ownable, ReentrancyGuard, Pausable {
         emit ETHWithdrawn(to, address(this).balance);
     }
 
+    // --- Recovery Management ---
+    function recoverMistakenMintableToken(address token) external nonReentrant {
+        require(msg.sender == multisig, "Bridge: unauthorized");
+        require(_mintableTokens[token], "Bridge: token not marked mintable");
+
+        // Transfer any accidentally locked tokens back to the bridge
+        IERC20(token).safeTransferFrom(address(this), multisig, IERC20(token).balanceOf(address(this)));
+
+        // Disable mintable flag
+        _mintableTokens[token] = false;
+        emit MintableTokenUpdated(token, false);
+    }
+
     // --- Emergency Functions ---
     function unpause() external {
         require(msg.sender == multisig || msg.sender == controller, "Bridge: unauthorized");
@@ -368,6 +389,8 @@ contract QubeBridge is Ownable, ReentrancyGuard, Pausable {
     }
 
     /**
+    * @dev WARNING: Only call this for tokens that implement IMintableERC20.
+    * Incorrect usage may result in permanent loss of funds.
     * @dev Mark a token as mintable (must implement IMintableERC20).
     * @param token Address of the token.
     * @param isMintable Whether the token supports minting/burning.
@@ -375,6 +398,18 @@ contract QubeBridge is Ownable, ReentrancyGuard, Pausable {
     function setMintableToken(address token, bool isMintable) external nonReentrant {
         require(msg.sender == controller, "Bridge: unauthorized");
         require(isSupportedToken(token), "Bridge: token not supported");
+        
+        IMintableERC20 mintableToken = IMintableERC20(token);
+        require(mintableToken.supportsInterface(type(IMintableERC20).interfaceId), "...");
+
+        if (isMintable) {
+            // Check ERC165 support for IMintableERC20
+            bool supported = IMintableERC20(token).supportsInterface(
+                type(IMintableERC20).interfaceId
+            );
+            require(supported, "Bridge: token does not support IMintableERC20");
+        }
+
         _mintableTokens[token] = isMintable;
         emit MintableTokenUpdated(token, isMintable);
     }
