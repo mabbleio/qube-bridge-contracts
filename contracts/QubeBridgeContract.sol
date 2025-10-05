@@ -10,7 +10,7 @@ import "@openzeppelin/contracts/utils/Pausable.sol";
 import "./interfaces/IMintableERC20.sol";
 
 /**
- * @title QubeBridge - v4.1
+ * @title QubeBridge - v4.2
  * @author Mabble Protocol (@muroko)
  * @notice QubeBridge is a cross-chain Bridge on supported chains
  * @notice QubeBridge is a Secure Custom Private Bridge operated by Mabble Protocol
@@ -24,11 +24,11 @@ contract QubeBridge is Ownable, ReentrancyGuard, Pausable {
     using SafeERC20 for IERC20;
 
     // --- State Variables ---
-    uint256 public immutable srcChainId;  // Origin deploy chain ID
     address public controller;
     address public processor;
     address[] public supportedTokens;  // List of supported tokens
     uint256[] public supportedChainIds;  // List of supported chain IDs
+    uint256 public immutable srcChainId;  // Origin deploy chain ID
     address public multisig;  // By Mabble Protocol for admin operations
     address public feeRecipient;  // Address to receive bridge fees
     uint256 public feePercent = 200; // Default bridge Fee in basis points (e.g., 2% = 200)
@@ -43,6 +43,11 @@ contract QubeBridge is Ownable, ReentrancyGuard, Pausable {
 
     // Pause state
     bool private _paused;
+    bool private _globallyPaused;
+
+    // Track paused tokens and chains
+    mapping(address => bool) private _pausedTokens;
+    mapping(uint256 => bool) private _pausedChains;
 
     // Track supported tokens globally (or per-chain if needed)
     mapping(address => bool) private _supportedTokens;
@@ -96,10 +101,28 @@ contract QubeBridge is Ownable, ReentrancyGuard, Pausable {
     event MintableTokenUpdated(address indexed token, bool isMintable);
     event MinAmountChanged(uint256 newMinAmount);
     event DeadlineChanged(uint256 newDeadline);
+    event TokenPauseUpdated(address indexed token, bool isPaused);
+    event ChainPauseUpdated(uint256 indexed chainId, bool isPaused);
 
     // --- Modifiers ---
     modifier onlyBridge() {
         require(msg.sender == address(this), "Not bridge");
+        _;
+    }
+
+    modifier whenChainNotPaused(uint256 destChainId) {
+        require(
+            !_globallyPaused &&
+            !_pausedChains[srcChainId] &&
+            !_pausedChains[destChainId],
+            "Pausable: chain paused"
+        );
+        _;
+    }
+
+    // Add new modifier for token-specific checks
+    modifier whenTokenNotPaused(address token) {
+        require(!_pausedTokens[token], "Pausable: token paused");
         _;
     }
 
@@ -140,7 +163,8 @@ contract QubeBridge is Ownable, ReentrancyGuard, Pausable {
         address destinationAddress,
         uint256 amount,
         uint256 destChainId
-    ) external payable nonReentrant whenNotPaused {
+    ) external payable nonReentrant whenNotPaused 
+        whenTokenNotPaused(tokenAddress) whenChainNotPaused(destChainId) {
         // Cache supported token check
         bool isTokenSupported = _supportedTokens[tokenAddress];
         require(isTokenSupported, "Bridge: token not supported");
@@ -354,16 +378,46 @@ contract QubeBridge is Ownable, ReentrancyGuard, Pausable {
     }
 
     // --- Emergency Functions ---
-    function unpause() external {
+    function pause() external nonReentrant {
+        require(msg.sender == multisig || msg.sender == controller, "Bridge: unauthorized");
+        _globallyPaused = true;
+        _pause();
+    }
+
+    function unpause() external nonReentrant {
         require(msg.sender == multisig || msg.sender == controller, "Bridge: unauthorized");
         require(block.timestamp >= _unpauseTime, "Bridge: unpause delayed");
+        _globallyPaused = false;
         _unpause();
     }
 
-    function pause() external {
-        require(msg.sender == multisig || msg.sender == controller, "Bridge: unauthorized");
-        _pause();
-        _unpauseTime = block.timestamp + unpauseDelay;
+    // Add new granular pause functions
+    function pauseToken(address token) external nonReentrant {
+        require(msg.sender == controller, "Bridge: unauthorized");
+        require(isSupportedToken(token), "Bridge: token not supported");
+         _pausedTokens[token] = true;
+        emit TokenPauseUpdated(token, true);
+    }
+
+    function unpauseToken(address token) external nonReentrant {
+        require(msg.sender == controller, "Bridge: unauthorized");
+        require(isSupportedToken(token), "Bridge: token not supported");
+        _pausedTokens[token] = false;
+        emit TokenPauseUpdated(token, false);
+    }
+
+    function pauseChain(uint256 chainId) external nonReentrant {
+        require(msg.sender == controller, "Bridge: unauthorized");
+        require(isSupportedChain(chainId), "Bridge: chain not supported");
+        _pausedChains[chainId] = true;
+        emit ChainPauseUpdated(chainId, true);
+    }
+
+    function unpauseChain(uint256 chainId) external nonReentrant {
+        require(msg.sender == controller, "Bridge: unauthorized");
+        require(isSupportedChain(chainId), "Bridge: chain not supported");
+        _pausedChains[chainId] = false;
+        emit ChainPauseUpdated(chainId, false);
     }
 
     // --- Fallback/Receive ---
@@ -389,8 +443,6 @@ contract QubeBridge is Ownable, ReentrancyGuard, Pausable {
     }
 
     /**
-    * @dev WARNING: Only call this for tokens that implement IMintableERC20.
-    * Incorrect usage may result in permanent loss of funds.
     * @dev Mark a token as mintable (must implement IMintableERC20).
     * @param token Address of the token.
     * @param isMintable Whether the token supports minting/burning.
