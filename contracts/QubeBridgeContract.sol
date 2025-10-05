@@ -10,9 +10,12 @@ import "@openzeppelin/contracts/utils/Pausable.sol";
 import "./interfaces/IMintableERC20.sol";
 
 /**
- * @title QubeBridge - v3.7
+ * @title QubeBridge - v3.9
  * @author Mabble Protocol (@muroko)
- * @notice QubeBridge is a cross-chain Bridge
+ * @notice QubeBridge is a cross-chain Bridge with selected chains
+ * @notice QubeBridge is a Secure Custom Private Bridge operated by Mabble Protocol
+ * used solely by QubeSwap Dex for its users to Bridge Assets and Trade.
+ * The Bridge work flow relied on a Backend Processor Server.
  * @custom:security-contact security@mabble.io
  * Website: qubeswap.com
 */
@@ -22,21 +25,28 @@ contract QubeBridge is Ownable, ReentrancyGuard, Pausable {
     // --- State Variables ---
     uint256 public immutable srcChainId;  // Origin deploy chain ID
     address public controller;
-    address public multisig;
+    address public processor;
+    address[] public supportedTokens;  // List of supported tokens
+    uint256[] public supportedChainIds;  // List of supported chain IDs
+    address public multisig;  // By Mabble Protocol for admin operations
     address public feeRecipient;  // Address to receive bridge fees
     uint256 public feePercent = 200; // Default bridge Fee in basis points (e.g., 2% = 200)
     uint256 public minAmount = 0.01 * 1e18; // Minimum bridge amount (0.01 token)
     uint256 public unpauseDelay = 48 hours;
     uint256 public deadline = 10 * 60; // 10min
     uint256 private _unpauseTime;
-    bool private _paused;  // Pause state
+
+    // Track count for enumeration
+    uint256 private _supportedTokensCount;
+    uint256 private _supportedChainIdsCount;
+
+    // Pause state
+    bool private _paused;
 
     // Track supported tokens globally (or per-chain if needed)
-    address[] public supportedTokens;
     mapping(address => bool) private _supportedTokens;
 
     // Track supported destination chains (optional)
-    uint256[] public supportedChainIds;
     mapping(uint256 => bool) private _supportedChainIds;
 
     // Nonce tracking per (fromChainId => toChainId)
@@ -78,6 +88,7 @@ contract QubeBridge is Ownable, ReentrancyGuard, Pausable {
     event FeePercentUpdated(uint256 newFeePercent);
     event FeeRecipientUpdated(address newRecipient);  // Track fee recipient changes
     event ControllerUpdated(address newController);
+    event ProcessorUpdated(address newProcessor);
     event MultisigUpdated(address newMultisig);
     event TokensWithdrawn(address indexed token, address indexed to, uint256 amount);
     event ETHWithdrawn(address indexed to, uint256 amount);
@@ -96,6 +107,7 @@ contract QubeBridge is Ownable, ReentrancyGuard, Pausable {
     constructor(
         uint256 _srcChainId,
         address _controller,
+        address _processor,
         address _multisig,
         address _feeRecipient  // Optional (defaults to controller if zero)
     ) Ownable(msg.sender) {
@@ -104,6 +116,7 @@ contract QubeBridge is Ownable, ReentrancyGuard, Pausable {
         require(_srcChainId != 0, "Bridge: invalid chain ID");
         srcChainId = _srcChainId;
         controller = _controller;
+        processor = _processor;
         multisig = _multisig;
         feeRecipient = _feeRecipient == address(0) ? _controller : _feeRecipient;
 
@@ -127,9 +140,11 @@ contract QubeBridge is Ownable, ReentrancyGuard, Pausable {
         uint256 amount,
         uint256 destChainId
     ) external payable nonReentrant whenNotPaused {
+        // Cache supported token check
+        bool isTokenSupported = _supportedTokens[tokenAddress];
+        require(isTokenSupported, "Bridge: token not supported");
         require(amount >= minAmount, "Bridge: slippage too high");
         require(destChainId != srcChainId, "Bridge: same chain");
-        require(isSupportedToken(tokenAddress), "Bridge: token not supported");
         require(isSupportedChain(destChainId), "Bridge: chain not supported");
         require(block.timestamp <= deadline, "Bridge: expired");
 
@@ -194,7 +209,7 @@ contract QubeBridge is Ownable, ReentrancyGuard, Pausable {
         bytes32 srcTxHash,
         uint256 nonce 
     ) external nonReentrant whenNotPaused {
-        require(msg.sender == multisig || msg.sender == controller, "Bridge: unauthorized");
+        require(msg.sender == processor, "Bridge: unauthorized");
         require(recipient != address(0), "Bridge: invalid recipient");
         require(isSupportedChain(fromChainId), "Bridge: source chain not supported");
         require(!_processedTransactions[srcTxHash], "Bridge: transaction already processed");
@@ -237,6 +252,7 @@ contract QubeBridge is Ownable, ReentrancyGuard, Pausable {
         require(!_supportedTokens[token], "Bridge: token already supported");
 
         _supportedTokens[token] = true;
+        _supportedTokensCount++;
         supportedTokens.push(token);
         emit TokenSupportUpdated(token, true);
     }
@@ -247,7 +263,8 @@ contract QubeBridge is Ownable, ReentrancyGuard, Pausable {
         require(_supportedTokens[token], "Bridge: token not supported");
 
         _supportedTokens[token] = false;
-        // Remove from array (swap-and-pop)
+        _supportedTokensCount--;
+        // Remove from array (optional, for enumeration)
         for (uint256 i = 0; i < supportedTokens.length; i++) {
             if (supportedTokens[i] == token) {
                 supportedTokens[i] = supportedTokens[supportedTokens.length - 1];
@@ -261,6 +278,7 @@ contract QubeBridge is Ownable, ReentrancyGuard, Pausable {
     function _addSupportedChain(uint256 chainId) private {
         require(!_supportedChainIds[chainId], "Bridge: chain already supported");
         _supportedChainIds[chainId] = true;
+        _supportedChainIdsCount++;
         supportedChainIds.push(chainId);
         emit ChainSupportUpdated(chainId, true);
     }
@@ -278,7 +296,8 @@ contract QubeBridge is Ownable, ReentrancyGuard, Pausable {
         require(_supportedChainIds[chainId], "Bridge: chain not supported");
 
         _supportedChainIds[chainId] = false;
-        // Remove from array (swap-and-pop)
+        _supportedChainIdsCount--;
+        // Remove from array (optional, for enumeration)
         for (uint256 i = 0; i < supportedChainIds.length; i++) {
             if (supportedChainIds[i] == chainId) {
                 supportedChainIds[i] = supportedChainIds[supportedChainIds.length - 1];
@@ -327,11 +346,11 @@ contract QubeBridge is Ownable, ReentrancyGuard, Pausable {
 
     // --- Fallback/Receive ---
     receive() external payable {
-        revert("Bridge: Bypass transfers not allowed (use bridge())");
+        revert("Bridge: Direct transfers not allowed (use bridge())");
     }
 
     fallback() external payable {
-        revert("Bridge: Bypass transfers not allowed (use bridge())");
+        revert("Bridge: Direct transfers not allowed (use bridge())");
     }
 
     // --- Setters ---
@@ -376,6 +395,12 @@ contract QubeBridge is Ownable, ReentrancyGuard, Pausable {
         require(msg.sender == multisig || msg.sender == controller, "Bridge: unauthorized");
         controller = newController;
         emit ControllerUpdated(newController);
+    }
+
+    function updateProcessor(address newProcessor) external nonReentrant {
+        require(msg.sender == multisig || msg.sender == controller, "Bridge: unauthorized");
+        processor = newProcessor;
+        emit ProcessorUpdated(newProcessor);
     }
 
     function updateMultisig(address newMultisig) external nonReentrant {
