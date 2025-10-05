@@ -21,4 +21,8 @@ interface IMintableERC20 {
      *      Can be replaced with direct `msg.sender` checks in the bridge.
      */
     function isMinter(address account) external view returns (bool);
+
+    // ERC165 Standard
+    function supportsInterface(bytes4 interfaceId) external view returns (bool);
+    
 }
