@@ -7,10 +7,12 @@ import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/utils/Pausable.sol";
+import "https://github.com/smartcontractkit/chainlink/blob/contracts-v1.3.0/contracts/src/v0.8/automation/AutomationCompatible.sol";
+import "https://github.com/smartcontractkit/chainlink/blob/contracts-v1.3.0/contracts/src/v0.8/ccip/applications/CCIPReceiver.sol";
 import "./interfaces/IMintableERC20.sol";
 
 /**
- * @title QubeBridge - v4.2
+ * @title QubeBridge - v4.3
  * @author Mabble Protocol (@muroko)
  * @notice QubeBridge is a cross-chain Bridge on supported chains
  * @notice QubeBridge is a Secure Custom Private Bridge operated by Mabble Protocol
@@ -20,7 +22,7 @@ import "./interfaces/IMintableERC20.sol";
  * @custom:security-contact security@mabble.io
  * Website: qubeswap.com
 */
-contract QubeBridge is Ownable, ReentrancyGuard, Pausable {
+contract QubeBridge is Ownable, ReentrancyGuard, Pausable, AutomationCompatible {
     using SafeERC20 for IERC20;
 
     // --- State Variables ---
@@ -36,6 +38,16 @@ contract QubeBridge is Ownable, ReentrancyGuard, Pausable {
     uint256 public unpauseDelay = 48 hours;
     uint256 public deadline = 5 * 60; // 5min
     uint256 private _unpauseTime;
+    
+    // --- Chainlink Automation Support ---
+    address public chainlinkOracle;               // Chainlink Automation registry address (address(0) if unsupported)
+    bytes32 public chainlinkJobId;                 // Chainlink job ID (bytes32(0) if unsupported)
+    uint256 public oracleTimeout = 1 hours;        // Max time to wait for oracle validation
+    mapping(uint256 => bool) public chainlinkSupportedChains;  // Track per-chain Chainlink support
+    mapping(bytes32 => bool) public oracleValidations;         // Track validated transactions
+    mapping(bytes32 => uint256) public txHashToChainId;        // Map txHash to destChainId for Chainlink callbacks
+
+    bytes32[] private _pendingTransactions;
 
     // Track count for enumeration
     uint256 private _supportedTokensCount;
@@ -89,6 +101,19 @@ contract QubeBridge is Ownable, ReentrancyGuard, Pausable {
         bytes32 srcTxHash,
         uint256 nonce  // nonce
     );
+    // --- New Event for Chainlink Automation ---
+    event BridgeInitiated(
+        address indexed tokenAddress,
+        address indexed from,
+        address indexed to,
+        uint256 amount,
+        uint256 feeAmount,
+        uint256 fromChainId,
+        uint256 toChainId,
+        uint256 nonce,
+        uint256 validationDeadline,
+        bytes32 txHash
+    );
     event TokenSupportUpdated(address indexed token, bool isSupported);
     event ChainSupportUpdated(uint256 indexed chainId, bool isSupported);
     event FeePercentUpdated(uint256 newFeePercent);
@@ -103,6 +128,10 @@ contract QubeBridge is Ownable, ReentrancyGuard, Pausable {
     event DeadlineChanged(uint256 newDeadline);
     event TokenPauseUpdated(address indexed token, bool isPaused);
     event ChainPauseUpdated(uint256 indexed chainId, bool isPaused);
+    event OracleValidationCompleted(bytes32 indexed txHash, uint256 indexed chainId);
+    event ChainlinkSupportUpdated(uint256 indexed chainId, bool isSupported);
+    event ChainlinkConfigUpdated(address indexed oracle, bytes32 indexed jobId);
+    event OracleValidationOverridden(bytes32 indexed txHash);
 
     // --- Modifiers ---
     modifier onlyBridge() {
@@ -133,16 +162,28 @@ contract QubeBridge is Ownable, ReentrancyGuard, Pausable {
         address _controller,
         address _processor,
         address _multisig,
-        address _feeRecipient  // Optional (defaults to controller if zero)
+        address _feeRecipient,  // Optional (defaults to controller if zero)
+        address _chainlinkOracle,       // Optional: address(0) if unsupported
+        bytes32 _chainlinkJobId          // Optional: bytes32(0) if unsupported
     ) Ownable(msg.sender) {
         require(_controller != address(0), "Bridge: invalid controller");
         require(_multisig != address(0), "Bridge: invalid multisig");
         require(_srcChainId != 0, "Bridge: invalid chain ID");
+
         srcChainId = _srcChainId;
         controller = _controller;
         processor = _processor;
         multisig = _multisig;
         feeRecipient = _feeRecipient == address(0) ? _controller : _feeRecipient;
+
+        // Initialize Chainlink (if supported)
+        chainlinkOracle = _chainlinkOracle;
+        chainlinkJobId = _chainlinkJobId;
+        if (_chainlinkOracle != address(0) && _chainlinkJobId != bytes32(0)) {
+            chainlinkSupportedChains[_srcChainId] = true;
+        } else {
+            chainlinkSupportedChains[_srcChainId] = false;
+        }
 
         // Automatically support the source chain
         _addSupportedChain(_srcChainId);
@@ -228,6 +269,37 @@ contract QubeBridge is Ownable, ReentrancyGuard, Pausable {
             destChainId,
             nonce
         );
+
+        bytes32 txHash = keccak256(abi.encodePacked(
+            tokenAddress,
+            msg.sender,
+            destinationAddress,
+            amount,
+            srcChainId,
+            destChainId,
+            nonce
+        ));
+
+         // Store txHash -> destChainId mapping for Chainlink callbacks
+        txHashToChainId[txHash] = destChainId;
+
+        // Emit Chainlink event if destChainId supports Chainlink
+        if (chainlinkSupportedChains[destChainId]) {
+            _pendingTransactions.push(txHash);
+            emit BridgeInitiated(
+                tokenAddress,
+                msg.sender,
+                destinationAddress,
+                amount,
+                feeAmount,
+                srcChainId,
+                destChainId,
+                nonce,
+                block.timestamp + oracleTimeout,
+                txHash
+            );
+        }
+
     }
 
     function transferToken(
@@ -238,7 +310,16 @@ contract QubeBridge is Ownable, ReentrancyGuard, Pausable {
         bytes32 srcTxHash,
         uint256 nonce 
     ) external nonReentrant whenNotPaused {
-        require(msg.sender == processor, "Bridge: unauthorized");
+        // Allow processor OR Chainlink validation
+        bool isChainlinkSupported = chainlinkSupportedChains[fromChainId];
+        require(
+            (isChainlinkSupported && oracleValidations[srcTxHash]) ||  // Chainlink-validated
+            (!isChainlinkSupported && msg.sender == processor) ||      // Processor fallback
+            (isChainlinkSupported && msg.sender == processor),         // Processor override
+            "Bridge: unauthorized or not validated"
+        );
+
+        //require(msg.sender == processor, "Bridge: unauthorized");
         require(recipient != address(0), "Bridge: invalid recipient");
         require(isSupportedChain(fromChainId), "Bridge: source chain not supported");
         require(!_processedTransactions[srcTxHash], "Bridge: transaction already processed");
@@ -276,6 +357,96 @@ contract QubeBridge is Ownable, ReentrancyGuard, Pausable {
                 IERC20(tokenAddress).safeTransfer(recipient, amount);
             }
         }
+    }
+
+    // --- Chainlink Automation Callbacks ---
+    function checkUpkeep(bytes calldata /* checkData */)
+        external
+        view
+        override
+        returns (bool upkeepNeeded, bytes memory performData)
+    {
+        // Check for pending transactions that need validation
+        for (uint256 i = 0; i < supportedChainIds.length; i++) {
+            uint256 chainId = supportedChainIds[i];
+            if (!chainlinkSupportedChains[chainId]) continue;
+
+            // TODO: In a real implementation, you would:
+            // 1. Query past BridgeInitiated events for this chain
+            // 2. Check if oracleValidations[txHash] is false
+            // 3. Return the first pending transaction
+            //
+            // For simplicity, we assume you have a way to track pending txs.
+            // Here's a placeholder for the logic:
+            bytes32 pendingTxHash = _findPendingTransaction(chainId);
+            if (pendingTxHash != bytes32(0)) {
+                upkeepNeeded = true;
+                performData = abi.encode(pendingTxHash, chainId);
+                return (upkeepNeeded, performData);
+            }
+        }
+        upkeepNeeded = false;
+    }
+
+    function performUpkeep(bytes calldata performData) external override {
+        (bytes32 txHash, uint256 destChainId) = abi.decode(performData, (bytes32, uint256));
+        require(chainlinkSupportedChains[destChainId], "Bridge: Chainlink not supported for chain");
+        require(!oracleValidations[txHash], "Bridge: already validated");
+
+        oracleValidations[txHash] = true;
+        emit OracleValidationCompleted(txHash, destChainId);
+    }
+
+    // Helper function to find pending transactions
+    function _findPendingTransaction(uint256 chainId)
+        internal view
+        returns (bytes32)
+    {
+        for (uint256 i = 0; i < _pendingTransactions.length; i++) {
+            bytes32 txHash = _pendingTransactions[i];
+            uint256 destChainId = txHashToChainId[txHash];
+            if (destChainId == chainId && !oracleValidations[txHash]) {
+                return txHash;
+            }
+        }
+        return bytes32(0);
+    }
+
+    // --- Oracle Management ---
+    function testChainlinkConnectivity() external view returns (bool) {
+        return chainlinkOracle != address(0) && chainlinkJobId != bytes32(0);
+    }
+
+    // Enable/disable Chainlink for a chain
+    function setChainlinkSupport(uint256 chainId, bool isSupported) external nonReentrant {
+        require(msg.sender == controller, "Bridge: unauthorized");
+        chainlinkSupportedChains[chainId] = isSupported;
+        emit ChainlinkSupportUpdated(chainId, isSupported);
+    }
+
+    // Update Chainlink oracle/job ID
+    function setChainlinkConfig(address _oracle, bytes32 _jobId) external nonReentrant {
+        require(msg.sender == controller, "Bridge: unauthorized");
+        chainlinkOracle = _oracle;
+        chainlinkJobId = _jobId;
+        emit ChainlinkConfigUpdated(_oracle, _jobId);
+    }
+
+    // Override oracle validation (emergency)
+    function overrideOracleValidation(bytes32 txHash) external nonReentrant {
+        require(msg.sender == processor, "Bridge: unauthorized");
+        oracleValidations[txHash] = true;
+        emit OracleValidationOverridden(txHash);
+    }
+
+    function setChainlinkSupportedChain(uint256 chainId, bool isSupported) external {
+        require(msg.sender == controller, "Bridge: unauthorized");
+        chainlinkSupportedChains[chainId] = isSupported;
+    }
+
+    function setOracleTimeout(uint256 _timeout) external {
+        require(msg.sender == controller, "Bridge: unauthorized");
+        oracleTimeout = _timeout;
     }
 
     // --- Admin Functions ---
