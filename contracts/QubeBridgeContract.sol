@@ -3,17 +3,17 @@ pragma solidity ^0.8.28;
 
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-import "@openzeppelin/contracts/utils/math/SafeMath.sol";
+//import "@openzeppelin/contracts/utils/math/SafeMath.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/utils/Pausable.sol";
 import "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
 import "https://github.com/smartcontractkit/chainlink/blob/contracts-v1.3.0/contracts/src/v0.8/automation/AutomationCompatible.sol";
-import "https://github.com/smartcontractkit/chainlink/blob/contracts-v1.3.0/contracts/src/v0.8/ccip/applications/CCIPReceiver.sol";
+//import "https://github.com/smartcontractkit/chainlink/blob/contracts-v1.3.0/contracts/src/v0.8/ccip/applications/CCIPReceiver.sol";
 import "./interfaces/IMintableERC20.sol";
 
 /**
- * @title QubeBridge - v4.8
+ * @title QubeBridge - v4.9
  * @author Mabble Protocol (@muroko)
  * @notice QubeBridge is a cross-chain Bridge on supported chains
  * @notice QubeBridge is a Secure Custom Private Bridge operated by Mabble Protocol
@@ -27,7 +27,7 @@ contract QubeBridge is Ownable, ReentrancyGuard, Pausable, AutomationCompatible 
     using SafeERC20 for IERC20;
     using EnumerableSet for EnumerableSet.AddressSet;
     using EnumerableSet for EnumerableSet.UintSet;
-    using SafeMath for uint256;
+    //using SafeMath for uint256;
 
     // --- State Variables ---
 
@@ -36,13 +36,14 @@ contract QubeBridge is Ownable, ReentrancyGuard, Pausable, AutomationCompatible 
     address[] public supportedTokens;  // List of supported tokens
     uint256[] public supportedChainIds;  // List of supported chain IDs
     uint256 public immutable srcChainId;  // Origin deploy chain ID
-    address public multisig;  // By Mabble Protocol for admin operations
+    address public multisig;  // Managed by Mabble Protocol for admin operations
     address public feeRecipient;  // Address to receive bridge fees
     uint256 public feePercent = 200; // Default bridge Fee in basis points (e.g., 2% = 200)
-    uint256 private constant MAX_SUPPORTED_TOKENS = 100;
+    uint256 public emergencyWithdrawLockUntil;
+    uint256 public constant MAX_SUPPORTED_TOKENS = 100;
+    uint256 public constant FEE_DIVISOR = 10_000;
     uint256 public unpauseDelay = 48 hours;
     uint256 private _unpauseTime;
-    uint256 constant FEE_DIVISOR = 10_000;
     
     // --- Chainlink Automation Support ---
 
@@ -61,7 +62,7 @@ contract QubeBridge is Ownable, ReentrancyGuard, Pausable, AutomationCompatible 
     bytes32[] private _pendingTransactions;
 
     // Track count for enumeration
-    uint256 private _supportedTokensCount;
+    //uint256 private _supportedTokensCount;
     uint256 private _supportedChainIdsCount;
 
     // Pause state
@@ -89,7 +90,6 @@ contract QubeBridge is Ownable, ReentrancyGuard, Pausable, AutomationCompatible 
     // Constants for bitmask operations
     uint8 private constant FLAG_PAUSED    = 0x01;  // Binary: 00000001 (Bit 0)
     uint8 private constant FLAG_MINTABLE  = 0x02;  // Binary: 00000010 (Bit 1)
-    //uint8 flags = _tokenFlags[token];
 
     // keccak256(user, srcChain, destChain) => nonce
     mapping(bytes32 => uint256) private _nonces;
@@ -111,8 +111,9 @@ contract QubeBridge is Ownable, ReentrancyGuard, Pausable, AutomationCompatible 
     // Track the minimum amount of tokens that can be bridged
     mapping(address => uint256) public minAmount;
 
-    // --- Events ---
+    mapping(address => uint256) private _tokenIndices;
 
+    // --- Events ---
     event Bridge(
         address indexed tokenAddress,
         address indexed from,
@@ -121,7 +122,8 @@ contract QubeBridge is Ownable, ReentrancyGuard, Pausable, AutomationCompatible 
         uint256 feeAmount,
         uint256 fromChainId,
         uint256 toChainId,
-        uint256 nonce
+        uint256 nonce,
+        uint256 deadline
     );
     event BridgeCompleted(
         address indexed tokenAddress,
@@ -133,8 +135,8 @@ contract QubeBridge is Ownable, ReentrancyGuard, Pausable, AutomationCompatible 
         bytes32 srcTxHash,
         uint256 nonce  // nonce
     );
-    // --- New Event for Chainlink Automation ---
 
+    // --- New Event for Chainlink Automation ---
     event BridgeInitiated(
         address indexed tokenAddress,
         address indexed from,
@@ -143,9 +145,9 @@ contract QubeBridge is Ownable, ReentrancyGuard, Pausable, AutomationCompatible 
         uint256 feeAmount,
         uint256 fromChainId,
         uint256 toChainId,
-        uint256 nonce,
-        uint256 validationDeadline,
-        bytes32 txHash
+        //uint256 nonce,
+        uint256 validationDeadline
+        //bytes32 txHash
     );
     event BridgeFailed(
         address indexed tokenAddress,
@@ -191,7 +193,6 @@ contract QubeBridge is Ownable, ReentrancyGuard, Pausable, AutomationCompatible 
 
 
     // --- Constructor ---
-
     constructor(
         uint256 _srcChainId,
         address _controller,
@@ -233,6 +234,8 @@ contract QubeBridge is Ownable, ReentrancyGuard, Pausable, AutomationCompatible 
     function isSupportedChain(uint256 chainId) public view returns (bool) {
         return _supportedChainIds.contains(chainId);
     }
+
+    // --- Token Flags ---
 
     /// @dev Check if a token is paused
     function _isTokenPaused(address token) internal view returns (bool) {
@@ -277,16 +280,23 @@ contract QubeBridge is Ownable, ReentrancyGuard, Pausable, AutomationCompatible 
         address tokenAddress,
         address destinationAddress,
         uint256 amount,
-        uint256 destChainId
+        uint256 destChainId,
+        uint256 deadline
     ) external payable nonReentrant whenNotPaused 
         whenTokenNotPaused(tokenAddress) whenChainNotPaused(destChainId) {
+
         // Calculate fee and enforce minAmount
         uint256 feeAmount = (amount * feePercent + 9999) / FEE_DIVISOR;
         uint256 amountAfterFee = amount - feeAmount;
-        require(amountAfterFee >= minAmount[tokenAddress], "Bridge: slippage too high after fee");
+        //require(amountAfterFee >= minAmount[tokenAddress], "Bridge: slippage too high after fee");
+        require(amount >= minAmount[tokenAddress], "Bridge: amount < minAmount");
+        require(amountAfterFee >= (minAmount[tokenAddress] * (FEE_DIVISOR - feePercent)) / FEE_DIVISOR, "Bridge: slippage too high");
+        require(destChainId != srcChainId, "Bridge: cannot bridge to same chain");
+        require(deadline <= block.timestamp + oracleTimeout, "Deadline exceeds oracle timeout");
+        require(block.timestamp <= deadline, "Bridge: expired");
 
         // Nonce Compute first
-        uint256 nonce = ++nonces[msg.sender][srcChainId][destChainId];
+        uint256 nonce = nonces[msg.sender][srcChainId][destChainId];
 
         // Process token/ETH transfer
         if (tokenAddress == address(0)) {
@@ -296,8 +306,8 @@ contract QubeBridge is Ownable, ReentrancyGuard, Pausable, AutomationCompatible 
             _lockedETH[msg.sender] += amountAfterFee;
         } else {
             if (_isTokenMintable(tokenAddress)) {
-                IMintableERC20(tokenAddress).burn(msg.sender, amount);
-                IERC20(tokenAddress).safeTransferFrom(msg.sender, feeRecipient, feeAmount);
+                IMintableERC20(tokenAddress).burn(msg.sender, amountAfterFee);  // Burn after fee
+                IERC20(tokenAddress).safeTransfer(feeRecipient, feeAmount);      // Transfer fee separately
             } else {
                 IERC20(tokenAddress).safeTransferFrom(msg.sender, address(this), amount);
                 IERC20(tokenAddress).safeTransfer(feeRecipient, feeAmount);
@@ -316,10 +326,12 @@ contract QubeBridge is Ownable, ReentrancyGuard, Pausable, AutomationCompatible 
             feeAmount,
             srcChainId,
             destChainId,
-            nonce
+            nonce,
+            deadline
         );
 
-        bytes32 txHash = keccak256(abi.encodePacked(
+        bytes32 txHash = keccak256(
+            abi.encode(
             tokenAddress,
             msg.sender,
             destinationAddress,
@@ -344,9 +356,9 @@ contract QubeBridge is Ownable, ReentrancyGuard, Pausable, AutomationCompatible 
                 feeAmount,
                 srcChainId,
                 destChainId,
-                nonce,
-                block.timestamp + oracleTimeout,
-                txHash
+                //nonce,
+                block.timestamp + oracleTimeout
+                //txHash
             );
         }
 
@@ -379,8 +391,10 @@ contract QubeBridge is Ownable, ReentrancyGuard, Pausable, AutomationCompatible 
         require(isSupportedChain(fromChainId), "Bridge: unsupported source chain");
         require(recipient != address(0), "Bridge: invalid recipient");
         require(amount >= minAmount[tokenAddress], "Bridge: amount < minAmount");
+        require(recipient != address(0), "Bridge: invalid recipient");
 
         // INTERACTIONS (external calls) FIRST
+        // EFFECTS: Mark as processed AFTER external calls
         _processedTransactions[srcTxHash] = true;
         if (tokenAddress == address(0)) {
             require(address(this).balance >= amount, "Bridge: insufficient ETH");
@@ -401,6 +415,10 @@ contract QubeBridge is Ownable, ReentrancyGuard, Pausable, AutomationCompatible 
                 IERC20(tokenAddress).safeTransfer(recipient, amount);
             }
         }
+        // EFFECTS: Mark as processed AFTER external calls
+        _processedTransactions[srcTxHash] = true;
+
+        nonces[recipient][fromChainId][srcChainId] = nonce + 1;
 
         // Emit the BridgeCompleted event
         emit BridgeCompleted(
@@ -459,6 +477,12 @@ contract QubeBridge is Ownable, ReentrancyGuard, Pausable, AutomationCompatible 
         // INTERACTIONS: Emit last
         emit OracleValidationCompleted(txHash, destChainId);
     }   
+
+    function _getNonceKey(address user, uint256 srcChain, uint256 destChain)
+        internal pure returns (bytes32)
+    {
+        return keccak256(abi.encode(user, srcChain, destChain));
+    }
 
     // Helper function to add a pending transaction
     function _addPendingTransaction(bytes32 txHash) internal {
@@ -546,10 +570,12 @@ contract QubeBridge is Ownable, ReentrancyGuard, Pausable, AutomationCompatible 
         require(msg.sender == controller, "Bridge: unauthorized");
         require(token != address(0), "Bridge: invalid token");
         require(!_supportedTokens.contains(token), "Bridge: token already supported");
-        require(_supportedTokensCount < MAX_SUPPORTED_TOKENS, "Bridge: max tokens reached");
+        require(_supportedTokens.length() < MAX_SUPPORTED_TOKENS, "Bridge: max tokens reached");
+        bool isSupported = _supportedTokens.contains(token);
+        require(!isSupported, "Bridge: token already supported");
 
         _supportedTokens.add(token);  // ✅ Correct
-        _supportedTokensCount++;
+        _tokenIndices[token] = supportedTokens.length;
         supportedTokens.push(token);
         emit TokenSupportUpdated(token, true);
     }
@@ -560,15 +586,12 @@ contract QubeBridge is Ownable, ReentrancyGuard, Pausable, AutomationCompatible 
         require(_supportedTokens.contains(token), "Bridge: token not supported");
 
         _supportedTokens.remove(token);  // ✅ Correct
-        _supportedTokensCount--;
-        // Remove from array (optional, for enumeration)
-        for (uint256 i = 0; i < supportedTokens.length; i++) {
-            if (supportedTokens[i] == token) {
-                supportedTokens[i] = supportedTokens[supportedTokens.length - 1];
-                supportedTokens.pop();
-                break;
-            }
-        }
+        //_supportedTokensCount--;
+        uint256 index = _tokenIndices[token];
+        supportedTokens[index] = supportedTokens[supportedTokens.length - 1];
+        _tokenIndices[supportedTokens[index]] = index;  // Update the swapped token's index
+        supportedTokens.pop();
+        delete _tokenIndices[token];
         emit TokenSupportUpdated(token, false);
     }
 
@@ -582,6 +605,7 @@ contract QubeBridge is Ownable, ReentrancyGuard, Pausable, AutomationCompatible 
 
     function addSupportedChain(uint256 chainId) external nonReentrant {
         require(msg.sender == controller, "Bridge: unauthorized");
+        require(chainId < 10000, "Bridge: invalid chain ID");
         require(chainId != 0, "Bridge: invalid chain ID");
         require(chainId != srcChainId, "Bridge: cannot add source chain");
         _addSupportedChain(chainId);
@@ -603,6 +627,10 @@ contract QubeBridge is Ownable, ReentrancyGuard, Pausable, AutomationCompatible 
             }
         }
         emit ChainSupportUpdated(chainId, false);
+    }
+
+    function getSupportedToken(uint256 index) external view returns (address) {
+        return _supportedTokens.at(index);
     }
 
     // --- View Functions ---
@@ -646,12 +674,8 @@ contract QubeBridge is Ownable, ReentrancyGuard, Pausable, AutomationCompatible 
 
     function recoverERC20(address token, uint256 amount) external nonReentrant {
         require(msg.sender == multisig, "Bridge: unauthorized");
-        uint256 contractBalance = IERC20(token).balanceOf(address(this));
-        uint256 lockedBalance = 0;
-        for (uint256 i = 0; i < supportedTokens.length; i++) {
-            lockedBalance += _lockedTokens[address(this)][supportedTokens[i]];
-        }
-        require(contractBalance - lockedBalance >= amount, "Bridge: insufficient recoverable balance");
+        uint256 recoverable = IERC20(token).balanceOf(address(this)) - _lockedTokens[address(this)][token];
+        require(recoverable >= amount, "Bridge: insufficient recoverable balance");
         IERC20(token).safeTransfer(multisig, amount);
     }
 
@@ -662,6 +686,7 @@ contract QubeBridge is Ownable, ReentrancyGuard, Pausable, AutomationCompatible 
         require(block.timestamp >= _unpauseTime, "Bridge: pause delayed");
         _unpauseTime = block.timestamp + unpauseDelay;
         _pause();
+        emergencyWithdrawLockUntil = block.timestamp + 12 days;
     }
 
     function unpause() external nonReentrant {
@@ -669,6 +694,7 @@ contract QubeBridge is Ownable, ReentrancyGuard, Pausable, AutomationCompatible 
         require(block.timestamp >= _unpauseTime, "Bridge: unpause delayed");
         _unpauseTime = block.timestamp + unpauseDelay; // Reset for next pause
         _unpause();
+        emergencyWithdrawLockUntil = block.timestamp + 12 days;
     }
 
     function _pause() internal virtual override {
@@ -676,7 +702,7 @@ contract QubeBridge is Ownable, ReentrancyGuard, Pausable, AutomationCompatible 
     }
 
     function _unpause() internal virtual override {
-        _paused = true;
+        _paused = false;
     }
 
     // Add new granular pause functions
@@ -709,7 +735,7 @@ contract QubeBridge is Ownable, ReentrancyGuard, Pausable, AutomationCompatible 
     }
 
     function emergencyWithdraw(address token, uint256 amount) external nonReentrant {
-        require(block.timestamp >= _unpauseTime + 12 days, "Bridge: withdrawal locked");
+        require(block.timestamp >= emergencyWithdrawLockUntil, "Bridge: withdrawal locked");
         if (token == address(0)) {
             require(_lockedETH[msg.sender] >= amount, "Bridge: insufficient ETH");
             _lockedETH[msg.sender] -= amount;
@@ -719,6 +745,11 @@ contract QubeBridge is Ownable, ReentrancyGuard, Pausable, AutomationCompatible 
             _lockedTokens[msg.sender][token] -= amount;
             IERC20(token).safeTransfer(msg.sender, amount);
         }
+    }
+
+    function sweep(address token, address to, uint256 amount) external nonReentrant {
+        require(msg.sender == multisig, "Bridge: unauthorized");
+        IERC20(token).safeTransfer(to, amount);
     }
 
     // --- Fallback/Receive ---
