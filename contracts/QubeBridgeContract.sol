@@ -13,7 +13,7 @@ import "https://github.com/smartcontractkit/chainlink/blob/contracts-v1.3.0/cont
 import "./interfaces/IMintableERC20.sol";
 
 /**
- * @title QubeBridge - v4.7
+ * @title QubeBridge - v4.8
  * @author Mabble Protocol (@muroko)
  * @notice QubeBridge is a cross-chain Bridge on supported chains
  * @notice QubeBridge is a Secure Custom Private Bridge operated by Mabble Protocol
@@ -30,6 +30,7 @@ contract QubeBridge is Ownable, ReentrancyGuard, Pausable, AutomationCompatible 
     using SafeMath for uint256;
 
     // --- State Variables ---
+
     address public controller;
     address public processor;
     address[] public supportedTokens;  // List of supported tokens
@@ -44,6 +45,7 @@ contract QubeBridge is Ownable, ReentrancyGuard, Pausable, AutomationCompatible 
     uint256 constant FEE_DIVISOR = 10_000;
     
     // --- Chainlink Automation Support ---
+
     address public chainlinkOracle;               // Chainlink Automation registry address (address(0) if unsupported)
     bytes32 public chainlinkJobId;                 // Chainlink job ID (bytes32(0) if unsupported)
     uint256 public oracleTimeout = 15 minutes;        // Max time to wait for oracle validation
@@ -73,14 +75,21 @@ contract QubeBridge is Ownable, ReentrancyGuard, Pausable, AutomationCompatible 
     // Track paused chains
     mapping(uint256 => bool) private _pausedChains;
 
-    // Replace 3 mappings with 1:
-    // bit 0: supported, bit 1: paused, bit 2: mintable
-    mapping(address => uint8) private _tokenFlags;
+    // Bitmask flags for token properties (1 byte = 8 bits)
+    // Bit 0: isSupported (redundant with EnumerableSet, but kept for clarity)
+    // Bit 1: isPaused
+    // Bit 2: isMintable
+    // Bits 3-7: Reserved for future use
     // Track paused tokens
-    mapping(address => bool) private _pausedTokens;
-   
     // Track which tokens are mintable (optional)
+    mapping(address => uint8) private _tokenFlags;
+    mapping(address => bool) private _pausedTokens;
     mapping(address => bool) private _mintableTokens;
+
+    // Constants for bitmask operations
+    uint8 private constant FLAG_PAUSED    = 0x01;  // Binary: 00000001 (Bit 0)
+    uint8 private constant FLAG_MINTABLE  = 0x02;  // Binary: 00000010 (Bit 1)
+    //uint8 flags = _tokenFlags[token];
 
     // keccak256(user, srcChain, destChain) => nonce
     mapping(bytes32 => uint256) private _nonces;
@@ -103,6 +112,7 @@ contract QubeBridge is Ownable, ReentrancyGuard, Pausable, AutomationCompatible 
     mapping(address => uint256) public minAmount;
 
     // --- Events ---
+
     event Bridge(
         address indexed tokenAddress,
         address indexed from,
@@ -124,6 +134,7 @@ contract QubeBridge is Ownable, ReentrancyGuard, Pausable, AutomationCompatible 
         uint256 nonce  // nonce
     );
     // --- New Event for Chainlink Automation ---
+
     event BridgeInitiated(
         address indexed tokenAddress,
         address indexed from,
@@ -145,7 +156,7 @@ contract QubeBridge is Ownable, ReentrancyGuard, Pausable, AutomationCompatible 
     event TokenSupportUpdated(address indexed token, bool isSupported);
     event ChainSupportUpdated(uint256 indexed chainId, bool isSupported);
     event FeePercentUpdated(uint256 newFeePercent);
-    event FeeRecipientUpdated(address newRecipient);  // Track fee recipient changes
+    event FeeRecipientUpdated(address newRecipient);
     event ControllerUpdated(address newController);
     event ProcessorUpdated(address newProcessor);
     event MultisigUpdated(address newMultisig);
@@ -174,12 +185,13 @@ contract QubeBridge is Ownable, ReentrancyGuard, Pausable, AutomationCompatible 
 
     // Add new modifier for token-specific checks
     modifier whenTokenNotPaused(address token) {
-        require(!_pausedTokens[token], "Pausable: token paused");
+        require(!_isTokenPaused(token), "Pausable: token paused");
         _;
     }
 
 
     // --- Constructor ---
+
     constructor(
         uint256 _srcChainId,
         address _controller,
@@ -222,6 +234,38 @@ contract QubeBridge is Ownable, ReentrancyGuard, Pausable, AutomationCompatible 
         return _supportedChainIds.contains(chainId);
     }
 
+    /// @dev Check if a token is paused
+    function _isTokenPaused(address token) internal view returns (bool) {
+        return (_tokenFlags[token] & FLAG_PAUSED) != 0;
+    }
+
+    /// @dev Check if a token is mintable
+    function _isTokenMintable(address token) internal view returns (bool) {
+        return (_tokenFlags[token] & FLAG_MINTABLE) != 0;
+    }
+
+    /// @dev Set pause status for a token
+    function _setTokenPaused(address token, bool paused) internal {
+        if (paused) {
+            _tokenFlags[token] |= FLAG_PAUSED;
+        } else {
+            _tokenFlags[token] &= ~FLAG_PAUSED;
+        }
+    }
+
+    /// @dev Set mintable status for a token
+    function _setTokenMintable(address token, bool mintable) internal {
+        require(
+            mintable ? IMintableERC20(token).supportsInterface(type(IMintableERC20).interfaceId) : true,
+            "Token does not support IMintableERC20"
+        );
+        if (mintable) {
+            _tokenFlags[token] |= FLAG_MINTABLE;
+        } else {
+            _tokenFlags[token] &= ~FLAG_MINTABLE;
+        }
+    }
+
     // --- Core Functions ---
 
     /// @notice Bridge tokens from the source chain to the destination chain.
@@ -251,7 +295,7 @@ contract QubeBridge is Ownable, ReentrancyGuard, Pausable, AutomationCompatible 
             payable(feeRecipient).transfer(feeAmount);
             _lockedETH[msg.sender] += amountAfterFee;
         } else {
-            if (_mintableTokens[tokenAddress]) {
+            if (_isTokenMintable(tokenAddress)) {
                 IMintableERC20(tokenAddress).burn(msg.sender, amount);
                 IERC20(tokenAddress).safeTransferFrom(msg.sender, feeRecipient, feeAmount);
             } else {
@@ -346,7 +390,7 @@ contract QubeBridge is Ownable, ReentrancyGuard, Pausable, AutomationCompatible 
         } else {
             require(_lockedTokens[recipient][tokenAddress] >= amount, "Bridge: insufficient tokens");
             _lockedTokens[recipient][tokenAddress] -= amount;
-            if (_mintableTokens[tokenAddress]) {
+            if (_isTokenMintable(tokenAddress)) {
                 // Mint tokens instead of transferring from bridge's balance
                 try IMintableERC20(tokenAddress).mint(recipient, amount) {
                     // Success: proceed
@@ -458,6 +502,7 @@ contract QubeBridge is Ownable, ReentrancyGuard, Pausable, AutomationCompatible 
     }
 
     // --- Oracle Management ---
+
     function isChainlinkConfigured() external view returns (bool) {
         return chainlinkOracle != address(0) && chainlinkJobId != bytes32(0);
     }
@@ -638,14 +683,14 @@ contract QubeBridge is Ownable, ReentrancyGuard, Pausable, AutomationCompatible 
     function pauseToken(address token) external nonReentrant {
         require(msg.sender == controller, "Bridge: unauthorized");
         require(isSupportedToken(token), "Bridge: token not supported");
-         _pausedTokens[token] = true;
-        //emit TokenPauseUpdated(token, true);
+        _setTokenPaused(token, true);
+        emit TokenPauseUpdated(token, true);
     }
 
     function unpauseToken(address token) external nonReentrant {
         require(msg.sender == controller, "Bridge: unauthorized");
         require(isSupportedToken(token), "Bridge: token not supported");
-        _pausedTokens[token] = false;
+        _setTokenPaused(token, false);
         emit TokenPauseUpdated(token, false);
     }
 
@@ -702,19 +747,7 @@ contract QubeBridge is Ownable, ReentrancyGuard, Pausable, AutomationCompatible 
     function setMintableToken(address token, bool isMintable) external nonReentrant {
         require(msg.sender == controller, "Bridge: unauthorized");
         require(isSupportedToken(token), "Bridge: token not supported");
-        
-        IMintableERC20 mintableToken = IMintableERC20(token);
-        require(mintableToken.supportsInterface(type(IMintableERC20).interfaceId), "...");
-
-        if (isMintable) {
-            // Check ERC165 support for IMintableERC20
-            bool supported = IMintableERC20(token).supportsInterface(
-                type(IMintableERC20).interfaceId
-            );
-            require(supported, "Bridge: token does not support IMintableERC20");
-        }
-
-        _mintableTokens[token] = isMintable;
+        _setTokenMintable(token, isMintable);
         emit MintableTokenUpdated(token, isMintable);
     }
 
