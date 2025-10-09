@@ -1,20 +1,23 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.28;
 
+import "@openzeppelin/contracts/token/ERC20/extensions/ERC20Permit.sol"; // Optional: Add permit support
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-//import "@openzeppelin/contracts/utils/math/SafeMath.sol";
-import "@openzeppelin/contracts/access/Ownable.sol";
+//import "@openzeppelin/contracts/access/Ownable.sol";
+import "@openzeppelin/contracts/access/Ownable2Step.sol";
 import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/utils/Pausable.sol";
 import "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
-import "https://github.com/smartcontractkit/chainlink/blob/contracts-v1.3.0/contracts/src/v0.8/automation/AutomationCompatible.sol";
+import "@chainlink/contracts/src/v0.8/automation/AutomationCompatible.sol";
+//import "https://github.com/smartcontractkit/chainlink/blob/contracts-v1.3.0/contracts/src/v0.8/automation/AutomationCompatible.sol";
 //import "https://github.com/smartcontractkit/chainlink/blob/contracts-v1.3.0/contracts/src/v0.8/ccip/applications/CCIPReceiver.sol";
 import "./interfaces/IMintableERC20.sol";
 
 /**
- * @title QubeBridge - v5.1
+ * @title QubeBridge - v5.2
  * @author Mabble Protocol (@muroko)
+ * @notice using OpenZellin Contracts v5
  * @notice QubeBridge is a cross-chain Bridge on supported chains
  * @notice QubeBridge is a Secure Custom Private Bridge operated by Mabble Protocol
  * used solely by QubeSwap Dex for its users to Bridge Assets and Trade.
@@ -23,7 +26,7 @@ import "./interfaces/IMintableERC20.sol";
  * @custom:security-contact security@mabble.io
  * Website: qubeswap.com
 */
-contract QubeBridge is Ownable, ReentrancyGuard, Pausable, AutomationCompatible {
+contract QubeBridge is ReentrancyGuard, Pausable, Ownable2Step, AutomationCompatible {
     using SafeERC20 for IERC20;
     using EnumerableSet for EnumerableSet.AddressSet;
     using EnumerableSet for EnumerableSet.UintSet;
@@ -71,7 +74,7 @@ contract QubeBridge is Ownable, ReentrancyGuard, Pausable, AutomationCompatible 
     uint256 private _supportedChainIdsCount;
 
     // Pause state
-    bool private _paused;
+    //bool private _paused;
 
     // Track supported tokens
     EnumerableSet.AddressSet private _supportedTokens;
@@ -250,7 +253,7 @@ contract QubeBridge is Ownable, ReentrancyGuard, Pausable, AutomationCompatible 
         _addSupportedChain(_srcChainId);
     }
 
-    // --- Helper Functions ---
+    // --- Check Functions ---
 
     function isSupportedToken(address token) public view returns (bool) {
         return _supportedTokens.contains(token);
@@ -522,6 +525,9 @@ contract QubeBridge is Ownable, ReentrancyGuard, Pausable, AutomationCompatible 
         emit OracleValidationCompleted(txHash, destChainId);
     }   
 
+    // --- Helper Functions ---
+
+    // Helper function to get nonce key
     function _getNonceKey(address user, uint256 srcChain, uint256 destChain)
         internal pure returns (bytes32)
     {
@@ -730,6 +736,15 @@ contract QubeBridge is Ownable, ReentrancyGuard, Pausable, AutomationCompatible 
 
     // --- Emergency Functions ---
 
+    // Explicitly override Pausable functions
+    function _pause() internal virtual override {
+        Pausable._pause(); // Explicit call
+    }
+
+    function _unpause() internal virtual override {
+        Pausable._unpause(); // Explicit call
+    }
+
     function pause() external nonReentrant {
         require(msg.sender == multisig || msg.sender == controller, "Bridge: unauthorized");
         require(block.timestamp >= _unpauseTime, "Bridge: pause delayed");
@@ -738,7 +753,7 @@ contract QubeBridge is Ownable, ReentrancyGuard, Pausable, AutomationCompatible 
         if (emergencyWithdrawLockUntil == 0) {  // Only set if not already locked
             emergencyWithdrawLockUntil = block.timestamp + 3 days;
         }
-        _pause();
+        Pausable._pause(); // Updated
     }
 
     function unpause() external nonReentrant {
@@ -746,15 +761,7 @@ contract QubeBridge is Ownable, ReentrancyGuard, Pausable, AutomationCompatible 
         require(block.timestamp >= _unpauseTime, "Bridge: unpause delayed");
         _unpauseTime = block.timestamp + unpauseDelay; // Reset for next pause
         emergencyWithdrawLockUntil = block.timestamp + 3 days;
-        _unpause();
-    }
-
-    function _pause() internal virtual override {
-        _paused = true;
-    }
-
-    function _unpause() internal virtual override {
-        _paused = false;
+        Pausable._unpause(); // Updated
     }
 
     // Add new granular pause functions
