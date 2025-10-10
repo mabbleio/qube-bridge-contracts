@@ -10,12 +10,13 @@ import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/utils/Pausable.sol";
 import "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
 import "@chainlink/contracts/src/v0.8/automation/AutomationCompatible.sol";
+import "@openzeppelin/contracts/utils/math/Math.sol";
 //import "https://github.com/smartcontractkit/chainlink/blob/contracts-v1.3.0/contracts/src/v0.8/automation/AutomationCompatible.sol";
 //import "https://github.com/smartcontractkit/chainlink/blob/contracts-v1.3.0/contracts/src/v0.8/ccip/applications/CCIPReceiver.sol";
 import "./interfaces/IMintableERC20.sol";
 
 /**
- * @title QubeBridge - v5.3
+ * @title QubeBridge - v5.4
  * @author Mabble Protocol (@muroko)
  * @notice using OpenZellin Contracts v5
  * @notice QubeBridge is a cross-chain Bridge on supported chains
@@ -319,8 +320,9 @@ contract QubeBridge is ReentrancyGuard, Pausable, Ownable2Step, AutomationCompat
 
        // uint256 deadline > 5 minutes && deadline <= block.timestamp + oracleTimeout;
         // Calculate fee and enforce minAmount
-        uint256 feeAmount = (amount * feePercent + 9999) / FEE_DIVISOR;
+        uint256 feeAmount = Math.mulDiv(amount, feePercent, FEE_DIVISOR);
         uint256 amountAfterFee = amount - feeAmount;
+        require(feeAmount <= amount, "Bridge: fee exceeds amount");  // Sanity check
         //require(amountAfterFee >= minAmount[tokenAddress], "Bridge: slippage too high after fee");
         require(amount >= minAmount[tokenAddress], "Bridge: amount < minAmount");
         require(amountAfterFee >= (minAmount[tokenAddress] * (FEE_DIVISOR - feePercent)) / FEE_DIVISOR, "Bridge: slippage too high");
