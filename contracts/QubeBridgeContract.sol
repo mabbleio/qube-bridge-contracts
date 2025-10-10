@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.28;
 
-import "@openzeppelin/contracts/token/ERC20/extensions/ERC20Permit.sol";
+//import "@openzeppelin/contracts/token/ERC20/extensions/ERC20Permit.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/access/Ownable2Step.sol";
@@ -39,16 +39,16 @@ contract QubeBridge is ReentrancyGuard, Pausable, Ownable2Step, AutomationCompat
     // --- State Variables ---
     address public controller;
     address public processor;
-    address[] public supportedTokens;  // List of supported tokens
+    //address[] public supportedTokens;  // List of supported tokens
     uint256 public immutable srcChainId;  // Origin deploy chain ID
     address public multisig;  // Managed by Mabble Protocol for admin operations
     address public feeRecipient;  // Address to receive bridge fees
     uint256 public feePercent = 200; // Default bridge Fee in basis points (e.g., 2% = 200)
     uint256 public emergencyWithdrawLockUntil;
-    uint256 public MAX_SUPPORTED_TOKENS = 100;
+    uint256 public constant SOFT_MAX_TOKENS = 100;  // Soft Max Supported Tokens
     uint256 public constant FEE_DIVISOR = 10_000;
     uint256 public unpauseDelay = 48 hours;
-    uint256 private _maxPendingTransactions = 100;
+    uint256 private _maxPendingTransactions = 200;
     uint256 private _unpauseTime;
 
     // Constants for bitmask operations
@@ -58,7 +58,7 @@ contract QubeBridge is ReentrancyGuard, Pausable, Ownable2Step, AutomationCompat
     // --- Chainlink Automation Support ---
     address public chainlinkOracle;               // Chainlink Automation registry address (address(0) if unsupported)
     bytes32 public chainlinkJobId;                 // Chainlink job ID (bytes32(0) if unsupported)
-    uint256 public oracleTimeout = 15 minutes;        // Max time to wait for oracle validation
+    uint256 public oracleTimeout = 45 minutes;        // Max time to wait for oracle validation
     uint256[] private _chainlinkEnabledChains;
     mapping(uint256 => bool) public chainlinkSupportedChains;  // Track per-chain Chainlink support
     mapping(bytes32 => bool) public oracleValidations;         // Track validated transactions
@@ -99,7 +99,9 @@ contract QubeBridge is ReentrancyGuard, Pausable, Ownable2Step, AutomationCompat
     mapping(bytes32 => uint256) private _pendingTxTimestamps;
     // Track the minimum amount of tokens that can be bridged
     mapping(address => uint256) public minAmount;
+    // Track supported tokens
     mapping(address => uint256) private _tokenIndices;
+     // Track recovery timelocks for users
     mapping(address => uint256) private _recoveryTimelocks;
     // Track transaction details for pending transactions
     mapping(bytes32 => TxDetails) private _txHashDetails;
@@ -174,9 +176,14 @@ contract QubeBridge is ReentrancyGuard, Pausable, Ownable2Step, AutomationCompat
     event OracleTimeoutUpdated(uint256 newTimeout);
     event MaxSupportedTokensUpdated(uint256 newMaxSupportedTokens);
     event EmergencyWithdrawal(address indexed user, address indexed token, uint256 amount);
+    event UnpauseDelayUpdated(uint256 oldDelay, uint256 newDelay);
+    
+    /// @notice Emitted when a controller initiates a cancellation timelock for a pending transaction.
+    /// @param txHash The hash of the transaction to be cancelled.
+    /// @param cancelAvailableAt The timestamp when cancellation becomes available.
+    event PendingTxCancelInitiated(bytes32 indexed txHash, uint256 cancelAvailableAt);
     event TransactionCancelled(bytes32 indexed txHash, address indexed user);
     event TransactionCancelledByController(bytes32 indexed txHash, address indexed user, address indexed controller);
-    event UnpauseDelayUpdated(uint256 oldDelay, uint256 newDelay);
 
     // --- Modifiers ---
     
@@ -295,7 +302,7 @@ contract QubeBridge is ReentrancyGuard, Pausable, Ownable2Step, AutomationCompat
         require(destinationAddress != address(0), "Bridge: invalid destination");
         require(isSupportedChain(destChainId), "Bridge: unsupported destination chain");
 
-        uint256 deadline = 0;
+        uint256 deadline = block.timestamp + 15 minutes;
         // Calculate fee and enforce minAmount
         uint256 feeAmount = Math.mulDiv(amount, feePercent, FEE_DIVISOR);
         require(feeAmount <= amount, "Bridge: fee exceeds amount");  // Sanity check
@@ -304,12 +311,11 @@ contract QubeBridge is ReentrancyGuard, Pausable, Ownable2Step, AutomationCompat
         require(amount >= minAmount[tokenAddress], "Bridge: amount < minAmount");
         require(amountAfterFee >= (minAmount[tokenAddress] * (FEE_DIVISOR - feePercent)) / FEE_DIVISOR, "Bridge: slippage too high");
         require(destChainId != srcChainId, "Bridge: cannot bridge to same chain");
-        require(deadline <= block.timestamp + 1 days, "Bridge: deadline too far");  // ✅ Prevent DoS   
-        require(deadline > 5 minutes && deadline <= block.timestamp + oracleTimeout, "Deadline exceeds oracle timeout");
+        require(deadline <= block.timestamp + oracleTimeout, "Deadline exceeds oracle timeout");
         require(block.timestamp <= deadline, "Bridge: expired");
 
         // ✅ Checks-Effects-Interactions
-        unchecked { nonces[msg.sender][srcChainId][destChainId]++; }  // ✅ Saves gas
+        nonces[msg.sender][srcChainId][destChainId]++;
         uint256 nonce = nonces[msg.sender][srcChainId][destChainId];
 
         // Process token/ETH transfer
@@ -320,11 +326,15 @@ contract QubeBridge is ReentrancyGuard, Pausable, Ownable2Step, AutomationCompat
             _lockedETH[msg.sender] += amountAfterFee;
         } else {
             if (_isTokenMintable(tokenAddress)) {
+                require(IERC20(tokenAddress).balanceOf(msg.sender) >= amount, "Bridge: insufficient balance");
                 IMintableERC20(tokenAddress).burn(msg.sender, amountAfterFee);  // Burn after fee
                 IERC20(tokenAddress).safeTransfer(feeRecipient, feeAmount);      // Transfer fee separately
             } else {
+                uint256 balanceBefore = IERC20(tokenAddress).balanceOf(address(this));
                 IERC20(tokenAddress).safeTransferFrom(msg.sender, address(this), amount);
                 IERC20(tokenAddress).safeTransfer(feeRecipient, feeAmount);
+                uint256 balanceAfter = IERC20(tokenAddress).balanceOf(address(this));
+                require(balanceAfter - balanceBefore >= amountAfterFee, "Bridge: transfer failed");
                 _lockedTokens[msg.sender][tokenAddress] += amountAfterFee;
             }
         }
@@ -424,8 +434,10 @@ contract QubeBridge is ReentrancyGuard, Pausable, Ownable2Step, AutomationCompat
         // INTERACTIONS (external calls) after state changes
         if (tokenAddress == address(0)) {
             require(address(this).balance >= amount, "Bridge: insufficient ETH");
+            uint256 balanceBefore = address(this).balance;
+            (bool success, ) = payable(recipient).call{value: amount}("");
+            require(success && address(this).balance == balanceBefore - amount, "Bridge: ETH transfer failed");
             _lockedETH[recipient] -= amount;
-            payable(recipient).transfer(amount);
         } else {
             require(_lockedTokens[recipient][tokenAddress] >= amount, "Bridge: insufficient tokens");
             _lockedTokens[recipient][tokenAddress] -= amount;
@@ -522,7 +534,8 @@ contract QubeBridge is ReentrancyGuard, Pausable, Ownable2Step, AutomationCompat
 
     // Helper function to find pending transactions
     function _findPendingTransaction(uint256 chainId) internal view returns (bytes32) {
-        for (uint256 i = 0; i < _pendingTransactions.length; i++) {
+        uint256 length = _pendingTransactions.length;
+        for (uint256 i = 0; i < length; i++) {
             bytes32 txHash = _pendingTransactions[i];
             if (txHashToChainId[txHash] == chainId && !oracleValidations[txHash]) {
                 return txHash;
@@ -562,7 +575,7 @@ contract QubeBridge is ReentrancyGuard, Pausable, Ownable2Step, AutomationCompat
 
     // Enable/disable Chainlink for a chain
     function setChainlinkSupport(uint256 chainId, bool isSupported) external nonReentrant {
-        require(msg.sender == controller, "Bridge: unauthorized");
+        if (msg.sender != controller) revert Bridge__Unauthorized(msg.sender);
         chainlinkSupportedChains[chainId] = isSupported;
         emit ChainlinkSupportUpdated(chainId, isSupported);
     }
@@ -592,19 +605,23 @@ contract QubeBridge is ReentrancyGuard, Pausable, Ownable2Step, AutomationCompat
         oracleTimeout = _timeout;
     }
 
+    function emergencyValidateTransaction(bytes32 txHash) external nonReentrant {
+        require(msg.sender == multisig, "Bridge: unauthorized");
+        oracleValidations[txHash] = true;
+        emit OracleValidationOverridden(txHash);
+    }
+
     // --- Admin Functions ---
 
     // Add a new supported token
     function addSupportedToken(address token) external nonReentrant {
         if (msg.sender != controller) revert Bridge__Unauthorized(msg.sender);
         require(token != address(0), "Bridge: invalid token");
-        require(_supportedTokens.length() < MAX_SUPPORTED_TOKENS, "Bridge: max tokens reached");
+        require(_supportedTokens.length() < SOFT_MAX_TOKENS, "Bridge: max tokens reached");  // Soft limit
         // Check if the token is already supported
         require(!_supportedTokens.contains(token), "Bridge: token already supported");
 
         _supportedTokens.add(token);  // ✅ Correct
-        _tokenIndices[token] = supportedTokens.length;
-        supportedTokens.push(token); // Atomic update
         emit TokenSupportUpdated(token, true);
     }
 
@@ -614,12 +631,6 @@ contract QubeBridge is ReentrancyGuard, Pausable, Ownable2Step, AutomationCompat
         require(_supportedTokens.contains(token), "Bridge: token not supported");
 
         _supportedTokens.remove(token);  // ✅ Correct
-        uint256 index = _tokenIndices[token];
-        if (index < supportedTokens.length) {
-            supportedTokens[index] = supportedTokens[supportedTokens.length - 1];
-            _tokenIndices[supportedTokens[index]] = index;
-        }
-        supportedTokens.pop();
         delete _tokenIndices[token];
         emit TokenSupportUpdated(token, false);
     }
@@ -709,11 +720,11 @@ contract QubeBridge is ReentrancyGuard, Pausable, Ownable2Step, AutomationCompat
     function pause() external nonReentrant {
         require(msg.sender == multisig || msg.sender == controller, "Bridge: unauthorized");
         require(block.timestamp >= _unpauseTime, "Bridge: pause delayed");
-        _unpauseTime = block.timestamp + unpauseDelay;
 
         if (emergencyWithdrawLockUntil == 0) {  // Only set if not already locked
             emergencyWithdrawLockUntil = block.timestamp + 3 days;
         }
+        _unpauseTime = block.timestamp + unpauseDelay; // Reset for next pause
         Pausable._pause();
     }
 
@@ -771,6 +782,7 @@ contract QubeBridge is ReentrancyGuard, Pausable, Ownable2Step, AutomationCompat
     function sweep(address token, address to, uint256 amount) external nonReentrant {
         if (msg.sender != multisig) revert Bridge__Unauthorized(msg.sender);
         require(token != address(0), "Bridge: ETH sweep not allowed");
+        require(to != address(0), "Bridge: invalid recipient");
         require(!isSupportedToken(token), "Bridge: cannot sweep supported tokens");
 
         uint256 bridgeBalance = IERC20(token).balanceOf(address(this));
@@ -830,9 +842,21 @@ contract QubeBridge is ReentrancyGuard, Pausable, Ownable2Step, AutomationCompat
         }
     }
 
-    // Controller must call this first, then wait (e.g., 1 day)
+    /**
+    * @notice Initiates a timelock for cancelling a pending transaction (for Chainlink-unsupported chains).
+    * @dev Only callable by the controller. The actual cancellation can occur after 1 day.
+    * @param txHash The transaction hash of the pending bridge transaction.
+    */
     function initiateCancelPendingTransaction(bytes32 txHash) external nonReentrant {
-        require(msg.sender == controller, "Bridge: unauthorized");
+        if (msg.sender != controller) revert Bridge__Unauthorized(msg.sender);
+        require(
+            !chainlinkSupportedChains[txHashToChainId[txHash]],
+            "Bridge: Chainlink-supported destination"
+        );
+        require(_isPendingTransaction[txHash], "Bridge: not pending");
+
+        // Emit BEFORE setting the timelock (front-running protection)
+        emit PendingTxCancelInitiated(txHash, block.timestamp + 1 days);
         _cancelTimelocks[txHash] = block.timestamp + 1 days;
     }
 
@@ -854,7 +878,7 @@ contract QubeBridge is ReentrancyGuard, Pausable, Ownable2Step, AutomationCompat
     * @param newDelay The new delay in seconds.
     */
     function setUnpauseDelay(uint256 newDelay) external nonReentrant {
-        if (msg.sender != controller || msg.sender != multisig) revert Bridge__Unauthorized(msg.sender);
+        if (msg.sender != controller && msg.sender != multisig) revert Bridge__Unauthorized(msg.sender);
         require(
             newDelay >= 1 hours && newDelay <= 7 days,
             "Bridge: delay must be between 1 hour and 7 days"
@@ -890,13 +914,6 @@ contract QubeBridge is ReentrancyGuard, Pausable, Ownable2Step, AutomationCompat
         emit MintableTokenUpdated(token, isMintable);
     }
 
-    function updateMaxSupportedTokens(uint256 newMaxSupportedTokens) external nonReentrant {
-        if (msg.sender != controller) revert Bridge__Unauthorized(msg.sender);
-        require(newMaxSupportedTokens > 100 && newMaxSupportedTokens <= 1000, "Bridge: New MAX_SUPPORTED_TOKENS must be > 100 ");
-        MAX_SUPPORTED_TOKENS = newMaxSupportedTokens;
-        emit MaxSupportedTokensUpdated(newMaxSupportedTokens);
-    }
-
     function updateFeePercent(uint256 newPercent) external nonReentrant {
         if (msg.sender != controller) revert Bridge__Unauthorized(msg.sender);
         require(newPercent <= 1000, "Bridge: fee too high");  // 10%
@@ -911,22 +928,28 @@ contract QubeBridge is ReentrancyGuard, Pausable, Ownable2Step, AutomationCompat
         emit FeeRecipientUpdated(newRecipient);
     }
 
+    function updateMaxSupportedTokens(uint256 newSoftMax) external nonReentrant {
+        if (msg.sender != controller) revert Bridge__Unauthorized(msg.sender);
+        require(newSoftMax > 100 && newSoftMax <= 1000, "Bridge: soft max supported tokens must be 100-1000");
+        emit MaxSupportedTokensUpdated(newSoftMax);  // Informational event only
+    }
+
     function updateController(address newController) external nonReentrant {
-        if (msg.sender != controller || msg.sender != multisig) revert Bridge__Unauthorized(msg.sender);
+        require(msg.sender == controller || msg.sender == multisig, "Bridge: unauthorized");
         require(newController != address(0), "Bridge: invalid controller");
         controller = newController;
         emit ControllerUpdated(newController);
     }
 
     function updateProcessor(address newProcessor) external nonReentrant {
-        if (msg.sender != controller || msg.sender != multisig) revert Bridge__Unauthorized(msg.sender);
+        require(msg.sender == controller || msg.sender == multisig, "Bridge: unauthorized");
         require(newProcessor != address(0), "Bridge: invalid processor");
         processor = newProcessor;
         emit ProcessorUpdated(newProcessor);
     }
 
     function updateMultisig(address newMultisig) external nonReentrant {
-        if (msg.sender != controller || msg.sender != multisig) revert Bridge__Unauthorized(msg.sender);
+        require(msg.sender == controller || msg.sender == multisig, "Bridge: unauthorized");
         multisig = newMultisig;
         emit MultisigUpdated(newMultisig);
     }
