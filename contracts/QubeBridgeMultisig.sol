@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: MIT
 
-pragma solidity ^0.8.20;
+pragma solidity ^0.8.28;
 
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
-import "./QubeBridgeContract_v3.sol";  // Import the bridge contract for type safety
+import "./QubeBridgeContract.sol";  // Import the bridge contract for type safety
 
 contract QubeBridgeMultisig is Ownable, ReentrancyGuard {
     using ECDSA for bytes32;
@@ -13,7 +13,6 @@ contract QubeBridgeMultisig is Ownable, ReentrancyGuard {
     // --- State Variables ---
     QubeBridge public immutable bridge;  // Reference to the bridge contract
     address[] public signers;            // List of authorized signers
-    mapping(address => bool) public isSigner;
     uint256 public requiredSignatures;   // Threshold (e.g., 2 for 2-of-3)
     uint256 public nonce;                // Replay protection
     /// @notice Counter for multisig transaction IDs (replay protection).
@@ -26,6 +25,7 @@ contract QubeBridgeMultisig is Ownable, ReentrancyGuard {
         bytes data;
         bool executed;
     }
+    mapping(address => bool) public isSigner;
     mapping(uint256 => Transaction) public transactions;
     mapping(uint256 => mapping(address => bool)) public signatures;
 
@@ -55,10 +55,7 @@ contract QubeBridgeMultisig is Ownable, ReentrancyGuard {
         address _bridge
     ) Ownable(msg.sender) {
         require(_signers.length > 0, "Multisig: no signers");
-        require(
-            _requiredSignatures <= _signers.length,
-            "Multisig: invalid threshold"
-        );
+        require(_requiredSignatures <= _signers.length, "Multisig: invalid threshold");
         require(_bridge != address(0), "Multisig: invalid bridge");
 
         bridge = QubeBridge(payable(_bridge));
@@ -187,7 +184,7 @@ contract QubeBridgeMultisig is Ownable, ReentrancyGuard {
     * @dev Encode a `sendToken` call for the bridge (helper for off-chain signing).
     * @param bridgeNonce The nonce used by QubeBridge (not the multisig's nonce).
     */
-    function encodeSendToken(
+    function encodeTransferToken(
         address tokenAddress,
         address recipient,
         uint256 amount,
@@ -196,7 +193,7 @@ contract QubeBridgeMultisig is Ownable, ReentrancyGuard {
         uint256 bridgeNonce  // Renamed to avoid shadowing
     ) public pure returns (bytes memory) {
         return abi.encodeWithSelector(
-            QubeBridge.sendToken.selector,
+            QubeBridge.transferToken.selector,
             tokenAddress,
             recipient,
             amount,
