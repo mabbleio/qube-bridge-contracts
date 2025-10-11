@@ -11,7 +11,7 @@ import "@chainlink/contracts/src/v0.8/automation/AutomationCompatible.sol";
 import "./interfaces/IMintableERC20.sol";
 
 /**
- * @title QubeBridge - v6.0
+ * @title QubeBridge - v6.1
  * @author Mabble Protocol (@muroko)
  * @notice using OpenZellin Contracts v5
  * @notice QubeBridge is a cross-chain Bridge on supported chains
@@ -117,21 +117,13 @@ contract QubeBridge is ReentrancyGuard, Pausable, Ownable2Step, AutomationCompat
         address indexed from,
         address indexed to,
         uint256 amount,
-        //uint256 feeAmount,
-        //uint256 fromChainId,
         uint256 toChainId
-        //uint256 nonce,
-        //uint256 deadline
     );
     event BridgeCompleted(
         address indexed tokenAddress,
         address indexed executor,
         address indexed to,
         uint256 amount
-        //uint256 fromChainId,
-        //uint256 toChainId,
-        //bytes32 srcTxHash,
-        //uint256 nonce
     );
 
     // --- New Event for Chainlink Automation ---
@@ -181,7 +173,6 @@ contract QubeBridge is ReentrancyGuard, Pausable, Ownable2Step, AutomationCompat
     event EmergencyWithdrawal(address indexed user, address indexed token, uint256 amount);
     event UnpauseDelayUpdated(uint256 oldDelay, uint256 newDelay);
     event TokenRecovered(address indexed token, address indexed to, uint256 amount);
-    
     /// @notice Emitted when a controller initiates a cancellation timelock for a pending transaction.
     /// @param txHash The hash of the transaction to be cancelled.
     /// @param cancelAvailableAt The timestamp when cancellation becomes available.
@@ -295,17 +286,17 @@ contract QubeBridge is ReentrancyGuard, Pausable, Ownable2Step, AutomationCompat
 
     /// @notice Bridge tokens from the source chain to the destination chain.
     /// @param tokenAddress The address of the token to bridge.
-    /// @param destinationAddress The address to receive the tokens on the destination chain.
+    /// @param destAddress The address to receive the tokens on the destination chain.
     /// @param amount The amount of tokens to bridge.
     /// @param destChainId The chain ID of the destination chain.
     function bridge(
         address tokenAddress,
-        address destinationAddress,
+        address destAddress,
         uint256 amount,
         uint256 destChainId
     ) external payable nonReentrant whenNotPaused 
         whenTokenNotPaused(tokenAddress) whenChainNotPaused(destChainId) {
-        require(destinationAddress != address(0), "Bridge: invalid destination");
+        require(destAddress != address(0), "Bridge: invalid destination");
         require(isSupportedChain(destChainId), "Bridge: unsupported destination chain");
 
         uint256 deadline = block.timestamp + 15 minutes;
@@ -351,13 +342,9 @@ contract QubeBridge is ReentrancyGuard, Pausable, Ownable2Step, AutomationCompat
         emit Bridge(
             tokenAddress,
             msg.sender,
-            destinationAddress,
+            destAddress,
             amountAfterFee,
-            //feeAmount,
-            //srcChainId,
             destChainId
-            //nonce,
-            //deadline
         );
 
         // Generate txHash and store transaction details
@@ -365,7 +352,7 @@ contract QubeBridge is ReentrancyGuard, Pausable, Ownable2Step, AutomationCompat
             abi.encode(
                 tokenAddress,
                 msg.sender,
-                destinationAddress,
+                destAddress,
                 amount,
                 srcChainId,
                 destChainId,
@@ -381,7 +368,7 @@ contract QubeBridge is ReentrancyGuard, Pausable, Ownable2Step, AutomationCompat
             emit BridgeToUnsupportedChain(
                 tokenAddress,
                 msg.sender,
-                destinationAddress,
+                destAddress,
                 amount,
                 destChainId,
                 "Processor intervention required"
@@ -397,7 +384,7 @@ contract QubeBridge is ReentrancyGuard, Pausable, Ownable2Step, AutomationCompat
             emit BridgeInitiated(
                 tokenAddress,
                 msg.sender,
-                destinationAddress,
+                destAddress,
                 amount,
                 feeAmount,
                 srcChainId,
@@ -475,10 +462,6 @@ contract QubeBridge is ReentrancyGuard, Pausable, Ownable2Step, AutomationCompat
             msg.sender,
             recipient,
             amount
-            //fromChainId,
-            //srcChainId,
-            //srcTxHash,
-            //nonce
         );
     }
 
@@ -564,7 +547,7 @@ contract QubeBridge is ReentrancyGuard, Pausable, Ownable2Step, AutomationCompat
     function _generateTxHash(
         address tokenAddress,
         address sender,
-        address destinationAddress,
+        address destAddress,
         uint256 amount,
         uint256 fromChainId,
         uint256 toChainId,
@@ -574,7 +557,7 @@ contract QubeBridge is ReentrancyGuard, Pausable, Ownable2Step, AutomationCompat
             abi.encode(
                 tokenAddress,
                 sender,
-                destinationAddress,
+                destAddress,
                 amount,
                 fromChainId,
                 toChainId,
