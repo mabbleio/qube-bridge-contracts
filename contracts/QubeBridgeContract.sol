@@ -11,7 +11,7 @@ import "@chainlink/contracts/src/v0.8/automation/AutomationCompatible.sol";
 import "./interfaces/IMintableERC20.sol";
 
 /**
- * @title QubeBridge - v5.9
+ * @title QubeBridge - v6.0
  * @author Mabble Protocol (@muroko)
  * @notice using OpenZellin Contracts v5
  * @notice QubeBridge is a cross-chain Bridge on supported chains
@@ -104,6 +104,12 @@ contract QubeBridge is ReentrancyGuard, Pausable, Ownable2Step, AutomationCompat
     mapping(bytes32 => TxDetails) private _txHashDetails;
     // Track cancel timelocks for pending transactions
     mapping(bytes32 => uint256) private _cancelTimelocks;
+    // Track support timelocks for tokens
+    mapping(address => uint256) private _tokenSupportTimelock;
+    // Track daily withdrawal limits for users
+    mapping(address => mapping(address => uint256)) private _dailyWithdrawalLimit;
+    mapping(address => mapping(address => uint256)) private _lastWithdrawalTime;
+
 
     // --- Events ---
     event Bridge(
@@ -426,6 +432,9 @@ contract QubeBridge is ReentrancyGuard, Pausable, Ownable2Step, AutomationCompat
                 (tokenAddress != address(0) && _lockedTokens[recipient][tokenAddress] >= amount),
                 "Bridge: insufficient balance"
         );
+        require(tokenAddress == address(0) || isSupportedToken(tokenAddress), 
+               "Bridge: invalid token"
+        );
         require(block.timestamp <= txHashToChainId[srcTxHash] + oracleTimeout,
                 "Bridge: validation expired"
         );
@@ -435,12 +444,15 @@ contract QubeBridge is ReentrancyGuard, Pausable, Ownable2Step, AutomationCompat
         require(nonce == nonces[recipient][fromChainId][srcChainId], "Bridge: invalid nonce");
         nonces[recipient][fromChainId][srcChainId] = nonce + 1;
 
+        // EFFECTS: Mark as processed Before external calls
+        _processedTransactions[srcTxHash] = true;
+
         // INTERACTIONS (external calls) after state changes
         if (tokenAddress == address(0)) {
             require(address(this).balance >= amount, "Bridge: insufficient ETH");
             uint256 balanceBefore = address(this).balance;
-            (bool success, ) = payable(recipient).call{value: amount}("");
-            require(success && address(this).balance == balanceBefore - amount, "Bridge: ETH transfer failed");
+            require(address(this).balance == balanceBefore - amount, "Bridge: ETH transfer failed");
+            payable(recipient).transfer(amount);
             _lockedETH[recipient] -= amount;
         } else {
             require(_lockedTokens[recipient][tokenAddress] >= amount, "Bridge: insufficient tokens");
@@ -456,8 +468,6 @@ contract QubeBridge is ReentrancyGuard, Pausable, Ownable2Step, AutomationCompat
                 IERC20(tokenAddress).safeTransfer(recipient, amount);
             }
         }
-        // EFFECTS: Mark as processed After external calls
-        _processedTransactions[srcTxHash] = true;
 
         // Emit the BridgeCompleted event
         emit BridgeCompleted(
@@ -635,6 +645,8 @@ contract QubeBridge is ReentrancyGuard, Pausable, Ownable2Step, AutomationCompat
         if (msg.sender != controller) revert Bridge__Unauthorized(msg.sender);
         require(token != address(0), "Bridge: invalid token");
         require(_supportedTokens.contains(token), "Bridge: token not supported");
+        require(block.timestamp >= _tokenSupportTimelock[token], "Bridge: timelock active");
+        _tokenSupportTimelock[token] = block.timestamp + 7 days; // Prevent immediate sweep
 
         _supportedTokens.remove(token);  // ✅ Correct
         delete _tokenIndices[token];
@@ -775,6 +787,7 @@ contract QubeBridge is ReentrancyGuard, Pausable, Ownable2Step, AutomationCompat
 
     function emergencyWithdraw(address token, uint256 amount) external nonReentrant {
         require(block.timestamp >= emergencyWithdrawLockUntil, "Bridge: withdrawal locked");
+        require(block.timestamp >= _lastWithdrawalTime[msg.sender][token] + 1 days, "Bridge: daily limit");
         if (token == address(0)) {
             require(_lockedETH[msg.sender] >= amount, "Bridge: insufficient ETH");
             _lockedETH[msg.sender] -= amount;
@@ -784,6 +797,7 @@ contract QubeBridge is ReentrancyGuard, Pausable, Ownable2Step, AutomationCompat
             _lockedTokens[msg.sender][token] -= amount;
             IERC20(token).safeTransfer(msg.sender, amount);
         }
+        _lastWithdrawalTime[msg.sender][token] = block.timestamp;
         emergencyWithdrawLockUntil = block.timestamp + 3 days;
         emit EmergencyWithdrawal(msg.sender, token, amount);
     }
@@ -810,21 +824,16 @@ contract QubeBridge is ReentrancyGuard, Pausable, Ownable2Step, AutomationCompat
     */
     function cancelPendingTransaction(bytes32 txHash) external nonReentrant {
         require(msg.sender == _txHashDetails[txHash].user ||
-            (msg.sender == controller && block.timestamp >= _cancelTimelocks[txHash]),
-            "Bridge: unauthorized or timelock active"
+                (msg.sender == controller && block.timestamp >= _cancelTimelocks[txHash]),
+                "Bridge: unauthorized or timelock active"
         );
-        require(
-            !chainlinkSupportedChains[txHashToChainId[txHash]],
-            "Bridge: Chainlink-supported destination"
+        require(!chainlinkSupportedChains[txHashToChainId[txHash]],
+                "Bridge: Chainlink-supported destination"
         );
-        require(
-            block.timestamp > txHashToChainId[txHash] + oracleTimeout,
-            "Bridge: validation period active"
+        require(block.timestamp > txHashToChainId[txHash] + oracleTimeout,
+                "Bridge: validation period active"
         );
-        require(
-            _isPendingTransaction[txHash],
-            "Bridge: not pending"
-        );
+        require(_isPendingTransaction[txHash],"Bridge: not pending");
 
         _cancelTimelocks[txHash] = block.timestamp + 12 hours;
         emit PendingTxCancelInitiated(txHash, block.timestamp + 12 hours);
@@ -888,11 +897,9 @@ contract QubeBridge is ReentrancyGuard, Pausable, Ownable2Step, AutomationCompat
     */
     function setUnpauseDelay(uint256 newDelay) external nonReentrant {
         if (msg.sender != controller && msg.sender != multisig) revert Bridge__Unauthorized(msg.sender);
-        require(
-            newDelay >= 1 hours && newDelay <= 7 days,
-            "Bridge: delay must be between 1 hour and 7 days"
+        require(newDelay >= 1 days && newDelay <= 7 days, 
+                "Bridge: delay must be between 1 day and 7 days"
         );
-
         // Emit event BEFORE state change (for front-running protection)
         emit UnpauseDelayUpdated(unpauseDelay, newDelay);
 
