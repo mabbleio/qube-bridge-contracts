@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.28;
 
-//import "@openzeppelin/contracts/token/ERC20/extensions/ERC20Permit.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/access/Ownable2Step.sol";
@@ -9,11 +8,10 @@ import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/utils/Pausable.sol";
 import "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
 import "@chainlink/contracts/src/v0.8/automation/AutomationCompatible.sol";
-//import "@openzeppelin/contracts/utils/math/Math.sol";
 import "./interfaces/IMintableERC20.sol";
 
 /**
- * @title QubeBridge - v5.8
+ * @title QubeBridge - v5.9
  * @author Mabble Protocol (@muroko)
  * @notice using OpenZellin Contracts v5
  * @notice QubeBridge is a cross-chain Bridge on supported chains
@@ -39,7 +37,6 @@ contract QubeBridge is ReentrancyGuard, Pausable, Ownable2Step, AutomationCompat
     // --- State Variables ---
     address public controller;
     address public processor;
-    //address[] public supportedTokens;  // List of supported tokens
     uint256 public immutable srcChainId;  // Origin deploy chain ID
     address public multisig;  // Managed by Mabble Protocol for admin operations
     address public feeRecipient;  // Address to receive bridge fees
@@ -309,6 +306,7 @@ contract QubeBridge is ReentrancyGuard, Pausable, Ownable2Step, AutomationCompat
         // Calculate fee and enforce minAmount
         uint256 feeAmount = Math.mulDiv(amount, feePercent, FEE_DIVISOR);
         require(feeAmount <= amount, "Bridge: fee exceeds amount");  // Sanity check
+        require(msg.value >= amount + feeAmount, "Bridge: insufficient ETH for fee");
         uint256 amountAfterFee = amount - feeAmount;
         
         // Validate amounts
@@ -326,7 +324,7 @@ contract QubeBridge is ReentrancyGuard, Pausable, Ownable2Step, AutomationCompat
         // Process token/ETH transfer
         if (tokenAddress == address(0)) {
             require(msg.value == amount, "Bridge: incorrect ETH amount");
-            require(msg.value >= minAmount[tokenAddress] + feeAmount, "Bridge: ETH amount too low");
+            require(msg.value >= minAmount[address(0)] + feeAmount, "Bridge: ETH amount too low");
             payable(feeRecipient).transfer(feeAmount);
             _lockedETH[msg.sender] += amountAfterFee;
         } else {
@@ -356,6 +354,7 @@ contract QubeBridge is ReentrancyGuard, Pausable, Ownable2Step, AutomationCompat
             //deadline
         );
 
+        // Generate txHash and store transaction details
         bytes32 txHash = keccak256(
             abi.encode(
                 tokenAddress,
@@ -420,7 +419,7 @@ contract QubeBridge is ReentrancyGuard, Pausable, Ownable2Step, AutomationCompat
         uint256 destChainId = txHashToChainId[srcTxHash];
         // Allow processor OR Chainlink validation
         require((chainlinkSupportedChains[destChainId] && oracleValidations[srcTxHash]) ||
-                (msg.sender == processor && !chainlinkSupportedChains[destChainId]),
+                (!chainlinkSupportedChains[destChainId] && msg.sender == processor),
                 "Bridge: unauthorized"
         );
         require((tokenAddress == address(0) && address(this).balance >= amount) ||
@@ -706,8 +705,9 @@ contract QubeBridge is ReentrancyGuard, Pausable, Ownable2Step, AutomationCompat
         emit MintableTokenUpdated(token, false);
     }
 
-    function recoverERC20(address token, uint256 amount) external nonReentrant {
+    function recoverERC20(address token, address to, uint256 amount) external nonReentrant {
         if (msg.sender != multisig) revert Bridge__Unauthorized(msg.sender);
+        require(to != address(0), "Bridge: invalid recipient");
         uint256 recoverable = IERC20(token).balanceOf(address(this)) - _lockedTokens[address(this)][token];
         require(recoverable >= amount, "Bridge: insufficient recoverable balance");
         require(!isSupportedToken(token), "Bridge: cannot recover supported tokens");
@@ -794,13 +794,11 @@ contract QubeBridge is ReentrancyGuard, Pausable, Ownable2Step, AutomationCompat
         require(to != address(0), "Bridge: invalid recipient");
         require(!isSupportedToken(token), "Bridge: cannot sweep supported tokens");
 
-        //uint256 bridgeBalance = IERC20(token).balanceOf(address(this));
         uint256 lockedBalance = 0;
         uint256 supportedTokensLength = _supportedTokens.length();  // Cache
         for (uint256 i = 0; i < supportedTokensLength; i++) {
             lockedBalance += _lockedTokens[address(this)][_supportedTokens.at(i)];
         }
-        //require(bridgeBalance - lockedBalance >= amount, "Bridge: insufficient sweepable balance");
         IERC20(token).safeTransfer(to, amount);
     }
 
@@ -827,6 +825,9 @@ contract QubeBridge is ReentrancyGuard, Pausable, Ownable2Step, AutomationCompat
             _isPendingTransaction[txHash],
             "Bridge: not pending"
         );
+
+        _cancelTimelocks[txHash] = block.timestamp + 12 hours;
+        emit PendingTxCancelInitiated(txHash, block.timestamp + 12 hours);
 
         TxDetails memory details = _txHashDetails[txHash];
         // Refund the user (not the caller, since the controller might be calling)
