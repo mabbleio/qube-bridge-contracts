@@ -1,5 +1,5 @@
 # Qube-Bridge-Contracts
-Qube Bridge Contracts
+
 
 
 ## Notice
@@ -10,10 +10,10 @@ validation and a multisig for admin operations.
 
 
 # QubeBridge Contract
-**Version**: 6.2
-**Author**: Mabble Protocol ([@muroko](https://github.com/muroko))
-**Website**: [qubeswap.com](https://qubeswap.com)
-**Security Contact**: [security@mabble.io](mailto:security@mabble.io)
+**Version**: 6.2 <br>
+**Author**: Mabble Protocol ([@muroko](https://github.com/muroko))<br>
+**Website**: [qubeswap.com](https://qubeswap.com)<br>
+**Security Contact**: [security@mabble.io](mailto:security@mabble.io)<br>
 
 ---
 
@@ -192,67 +192,6 @@ The bridge is **operated by Mabble Protocol** and uses a **multisig** for admin 
 
 ---
 
-## **Security Considerations**
-### **1. Audits & Testing**
-- **Third-Party Audit**: Recommended before mainnet deployment (e.g., OpenZeppelin, ConsenSys Diligence).
-- **Fuzz Testing**: Use **Foundry** or **Echidna** to test edge cases (reentrancy, front-running).
-- **Formal Verification**: Consider **Certora** or **MythX** for critical functions.
-
-### **2. Risks & Mitigations**
-| Risk                          | Mitigation                                                                 |
-|-------------------------------|----------------------------------------------------------------------------|
-| **Reentrancy**                | `nonReentrant` modifier on all external functions.                        |
-| **Front-Running**             | Timelocks on sensitive actions (e.g., unpausing, token removal).         |
-| **Oracle Failure**            | Fallback to manual processor validation.                                   |
-| **Liquidity Shortfall**       | `depositLiquidity()` ensures non-mintable tokens are available.           |
-| **Admin Centralization**      | Multisig control for critical functions.                                  |
-| **Fee Manipulation**          | Capped at 5% and configurable only by `controller`.                        |
-
-### **3. Best Practices**
-- **Upgradeability**: Consider deploying behind a **proxy** (e.g., OpenZeppelin Transparent Proxy).
-- **Monitoring**: Set up alerts for:
-  - Large `emergencyWithdraw` calls.
-  - Changes to `controller`/`processor`/`multisig`.
-  - Failed `transferToken` calls (potential exploits).
-- **Bug Bounty**: Launch a program (e.g., via [Immunefi](https://immunefi.com/)).
-
----
-
-## **Deployment**
-### **1. Prerequisites**
-- **Compiler**: Solidity `^0.8.28`.
-- **Dependencies**:
-  - OpenZeppelin (`@openzeppelin/contracts`).
-  - Chainlink (`@chainlink/contracts`).
-- **Environment**: Hardhat/Foundry for testing.
-
-### **2. Constructor Parameters**
-| Parameter               | Description                                                                 |
-|-------------------------|-----------------------------------------------------------------------------|
-| `_srcChainId`           | Chain ID where the bridge is deployed.                                     |
-| `_controller`           | Admin address (e.g., Mabble Protocol).                                    |
-| `_processor`            | Off-chain validator address.                                               |
-| `_multisig`             | Multisig address for emergency operations.                                 |
-| `_feeRecipient`         | Address to receive bridge fees.                                             |
-| `_chainlinkOracle`      | Chainlink Automation registry (use `address(0)` if unsupported).         |
-| `_chainlinkJobId`       | Chainlink job ID (use `bytes32(0)` if unsupported).                         |
-
-### **3. Steps**
-1. **Testnet Deployment**:
-   - Deploy to **Sepolia/Goerli**.
-   - Test bridging, pausing, and emergency withdrawals.
-
-2. **Mainnet Deployment**:
-   - Use a **multi-sig wallet** (e.g., Gnosis Safe) for `controller` and `multisig`.
-   - Start with a **low fee** (e.g., 0.5%) and increase gradually.
-   - **Pause the contract** initially and enable it after verifying parameters.
-
-3. **Post-Deployment**:
-   - Publish the contract address/ABI on [Etherscan](https://etherscan.io/) and [DefiLlama](https://defillama.com/).
-   - Set up a **bug bounty program**.
-
----
-
 ## **Usage Examples**
 ### **1. Bridging Tokens**
 ```solidity
@@ -268,9 +207,9 @@ bridge.bridge(
 
 
 ## QubeBridge | To Do Next
-Switch to a more Decentralized Bridge approach
-with features like:
--Governor DAO Manager along with a Multi-sig Timelock
--On-chain transactions verification
--A cross-chain messaging system no external processor
+Switch to a more Decentralized Bridge approach<br>
+with features like:<br>
+-Governor DAO Manager along with a Multi-sig Timelock<br>
+-On-chain transactions verification<br>
+-A cross-chain messaging system no external processor<br>
 -and more ...
