@@ -11,7 +11,7 @@ import "@chainlink/contracts/src/v0.8/automation/AutomationCompatible.sol";
 import "./interfaces/IMintableERC20.sol";
 
 /**
- * @title QubeBridge - v6.1
+ * @title QubeBridge - v6.2
  * @author Mabble Protocol (@muroko)
  * @notice using OpenZellin Contracts v5
  * @notice QubeBridge is a cross-chain Bridge on supported chains
@@ -109,6 +109,8 @@ contract QubeBridge is ReentrancyGuard, Pausable, Ownable2Step, AutomationCompat
     // Track daily withdrawal limits for users
     mapping(address => mapping(address => uint256)) private _dailyWithdrawalLimit;
     mapping(address => mapping(address => uint256)) private _lastWithdrawalTime;
+    // Track liquidity pool balances (for non-mintable tokens)
+    mapping(address => uint256) private _liquidityPool;
 
 
     // --- Events ---
@@ -179,6 +181,8 @@ contract QubeBridge is ReentrancyGuard, Pausable, Ownable2Step, AutomationCompat
     event PendingTxCancelInitiated(bytes32 indexed txHash, uint256 cancelAvailableAt);
     event TransactionCancelled(bytes32 indexed txHash, address indexed user);
     event TransactionCancelledByController(bytes32 indexed txHash, address indexed user, address indexed controller);
+    event LiquidityDeposited(address indexed token, uint256 amount);
+    event LiquidityWithdrawn(address indexed token, uint256 amount);
 
     // --- Modifiers ---
     
@@ -206,14 +210,16 @@ contract QubeBridge is ReentrancyGuard, Pausable, Ownable2Step, AutomationCompat
         uint256 _srcChainId,
         address _controller,
         address _processor,
-        address _multisig,
+        address _multisig,   // Initialize with address(0) on fresh deployment
         address _feeRecipient,
         address _chainlinkOracle,       // Optional: address(0) if unsupported
         bytes32 _chainlinkJobId          // Optional: bytes32(0) if unsupported
     ) Ownable(msg.sender) {
         require(_controller != address(0), "Bridge: invalid controller");
-        require(_multisig != address(0), "Bridge: invalid multisig");
         require(_srcChainId != 0, "Bridge: invalid chain ID");
+        require(_processor != address(0), "Bridge: invalid processor");
+        require(_feeRecipient != address(0), "Bridge: invalid fee recipient");
+
 
         srcChainId = _srcChainId;
         controller = _controller;
@@ -452,6 +458,10 @@ contract QubeBridge is ReentrancyGuard, Pausable, Ownable2Step, AutomationCompat
                     revert("Bridge: token mint failed");
                 }
             } else {
+                // ✅ NEW: Use liquidity pool for non-mintable tokens
+                require(_liquidityPool[tokenAddress] >= amount, "Bridge: insufficient liquidity");
+                _liquidityPool[tokenAddress] -= amount;
+                // Transfer tokens from bridge's balance to recipient
                 IERC20(tokenAddress).safeTransfer(recipient, amount);
             }
         }
@@ -948,8 +958,30 @@ contract QubeBridge is ReentrancyGuard, Pausable, Ownable2Step, AutomationCompat
     }
 
     function updateMultisig(address newMultisig) external nonReentrant {
-        require(msg.sender == controller || msg.sender == multisig, "Bridge: unauthorized");
+        if (msg.sender != controller) revert Bridge__Unauthorized(msg.sender);
+        require(newMultisig != address(0), "Bridge: invalid multisig");
         multisig = newMultisig;
         emit MultisigUpdated(newMultisig);
+    }
+
+    // --- Liquidity Pool Management ---
+
+    /// @notice Deposit tokens into the liquidity pool (for non-mintable tokens).
+    /// @dev Only callable by multisig or by controller.
+    function depositLiquidity(address token, uint256 amount) external nonReentrant {
+        if (msg.sender != controller && msg.sender != multisig) revert Bridge__Unauthorized(msg.sender);
+        require(!_isTokenMintable(token), "Bridge: token is mintable (no liquidity needed)");
+        IERC20(token).safeTransferFrom(msg.sender, address(this), amount);
+        _liquidityPool[token] += amount;
+        emit LiquidityDeposited(token, amount);
+    }
+
+    /// @notice Withdraw tokens from the liquidity pool (emergency only).
+    function withdrawLiquidity(address token, uint256 amount) external nonReentrant {
+        if (msg.sender != controller && msg.sender != multisig) revert Bridge__Unauthorized(msg.sender);
+        require(_liquidityPool[token] >= amount, "Bridge: insufficient liquidity");
+        _liquidityPool[token] -= amount;
+        IERC20(token).safeTransfer(msg.sender, amount);
+        emit LiquidityWithdrawn(token, amount);
     }
 }
