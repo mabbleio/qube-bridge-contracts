@@ -1,0 +1,7 @@
+# Testnet
+QST:
+0x
+
+# Mainnet
+QST:
+0x7F5141a80E7399C61e328C6bCf4C69Aa01738367
