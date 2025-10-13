@@ -5,7 +5,7 @@ pragma solidity ^0.8.28;
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
-import "./QubeBridgeContract.sol";  // Import the bridge contract for type safety
+import "./QubeBridge.sol";  // Import the bridge contract for type safety
 
 contract QubeBridgeMultisig is Ownable, ReentrancyGuard {
     using ECDSA for bytes32;
