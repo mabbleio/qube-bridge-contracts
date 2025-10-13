@@ -11,14 +11,15 @@ import "@chainlink/contracts/src/v0.8/automation/AutomationCompatible.sol";
 import "./interfaces/IMintableERC20.sol";
 
 /**
- * @title QubeBridge - v6.2
+ * @title QubeBridge - v6.3
  * @author Mabble Protocol (@muroko)
  * @notice using OpenZellin Contracts v5
  * @notice QubeBridge is a cross-chain Bridge on supported chains
  * @notice QubeBridge is a Secure Custom Private Bridge operated by Mabble Protocol
  * used solely by QubeSwap Dex for its users to Bridge Assets and Trade.
- * The Bridge work flow relied on a Backend Processor Server off-chain
- * validation and a multisig for admin operations.
+ * The Bridge work flow relies on Chainlink Automation for trusted validation
+ * and an Off-chain processor fallback for non-Chainlink chains.
+ * Admin operations are done by a multisig.
  * @custom:security-contact security@mabble.io
  * Website: qubeswap.com
 */
@@ -654,7 +655,6 @@ contract QubeBridge is ReentrancyGuard, Pausable, Ownable2Step, AutomationCompat
 
     function addSupportedChain(uint256 chainId) external nonReentrant {
         if (msg.sender != controller) revert Bridge__Unauthorized(msg.sender);
-        require(chainId < 10000, "Bridge: invalid chain ID");
         require(chainId != 0, "Bridge: invalid chain ID");
         require(chainId != srcChainId, "Bridge: cannot add source chain");
         _addSupportedChain(chainId);
