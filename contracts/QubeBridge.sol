@@ -40,7 +40,7 @@ contract QubeBridge is ReentrancyGuard, Pausable, Ownable2Step, AutomationCompat
     uint256 public immutable srcChainId;  // Origin deploy chain ID
     address public multisig;  // Managed by Mabble Protocol for admin operations
     address public feeRecipient;  // Address to receive bridge fees
-    uint256 public feePercent = 200; // Default bridge Fee in basis points (e.g., 2% = 200)
+    uint256 public feePercent = 100; // Default bridge Fee in basis points (e.g., 1% = 100)
     uint256 public emergencyWithdrawLockUntil;
     uint256 public constant SOFT_MAX_TOKENS = 100;  // Soft Max Supported Tokens
     uint256 public constant FEE_DIVISOR = 10_000;
