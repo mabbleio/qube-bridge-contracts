@@ -11,7 +11,7 @@ import "@chainlink/contracts/src/v0.8/automation/AutomationCompatible.sol";
 import "./interfaces/IMintableERC20.sol";
 
 /**
- * @title QubeBridge - v6.3
+ * @title QubeBridge - v6.4
  * @author Mabble Protocol (@muroko)
  * @notice using OpenZellin Contracts v5
  * @notice QubeBridge is a cross-chain Bridge on supported chains
@@ -405,13 +405,10 @@ contract QubeBridge is ReentrancyGuard, Pausable, Ownable2Step, AutomationCompat
     function transferToken(
         address tokenAddress,
         address recipient,
-        uint256 amount,
-        uint256 fromChainId,
-        bytes32 srcTxHash,
-        uint256 nonce 
+        uint256 amount 
     ) external nonReentrant whenNotPaused {
-        require(!_processedTransactions[srcTxHash], "Bridge: already processed");
-        require(isSupportedChain(fromChainId), "Bridge: unsupported source chain");
+        uint256 fromChainId; bytes32 srcTxHash; uint256 nonce;
+        // Validations
         require(recipient != address(0), "Bridge: invalid recipient");
         require(amount >= minAmount[tokenAddress], "Bridge: amount < minAmount");
 
