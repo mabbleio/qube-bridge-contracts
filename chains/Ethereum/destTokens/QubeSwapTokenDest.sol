@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.20;
+pragma solidity ^0.8.28;
 
 import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/extensions/ERC20Permit.sol";
 import "@openzeppelin/contracts/access/AccessControl.sol";
 import "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
+import "https://github.com/mabbleio/contract-deps/blob/main/interfaces/IMintableERC20.sol";
 
 contract QubeSwapTokenDest is ERC20, ERC20Permit, AccessControl, ReentrancyGuard {
     using ECDSA for bytes32;
@@ -104,6 +105,7 @@ contract QubeSwapTokenDest is ERC20, ERC20Permit, AccessControl, ReentrancyGuard
     function supportsInterface(bytes4 interfaceId) public view virtual override returns (bool) {
         return
             interfaceId == type(IERC165).interfaceId ||
+            interfaceId == type(IMintableERC20).interfaceId ||
             super.supportsInterface(interfaceId);
     }
 }
