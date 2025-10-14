@@ -11,7 +11,7 @@ import "@chainlink/contracts/src/v0.8/automation/AutomationCompatible.sol";
 import "./interfaces/IMintableERC20.sol";
 
 /**
- * @title QubeBridge - v6.5
+ * @title QubeBridge - v6.6
  * @author Mabble Protocol (@muroko)
  * @notice using OpenZellin Contracts v5
  * @notice QubeBridge is a Secure Custom Private Bridge operated by Mabble Protocol
@@ -119,6 +119,7 @@ contract QubeBridge is ReentrancyGuard, Pausable, Ownable2Step, AutomationCompat
         address indexed from,
         address indexed to,
         uint256 amount,
+        uint256 feeAmount,
         uint256 fromChainId,
         uint256 toChainId,
         uint256 nonce
@@ -313,11 +314,9 @@ contract QubeBridge is ReentrancyGuard, Pausable, Ownable2Step, AutomationCompat
         // Calculate fee and enforce minAmount
         uint256 feeAmount = Math.mulDiv(amount, feePercent, FEE_DIVISOR);
         require(feeAmount <= amount, "Bridge: fee exceeds amount");  // Sanity check
-        require(msg.value >= amount + feeAmount, "Bridge: insufficient ETH for fee");
         uint256 amountAfterFee = amount - feeAmount;
         
         // Validate amounts
-        require(msg.value >= minAmount[address(0)], "Bridge: ETH amount too low");
         require(amount >= minAmount[tokenAddress], "Bridge: amount < minAmount");
         require(amountAfterFee >= (minAmount[tokenAddress] * (FEE_DIVISOR - feePercent)) / FEE_DIVISOR, "Bridge: slippage too high");
         require(destChainId != srcChainId, "Bridge: cannot bridge to same chain");
@@ -330,8 +329,9 @@ contract QubeBridge is ReentrancyGuard, Pausable, Ownable2Step, AutomationCompat
 
         // Process token/ETH transfer
         if (tokenAddress == address(0)) {
-            require(msg.value == amount, "Bridge: incorrect ETH amount");
-            require(msg.value >= minAmount[address(0)] + feeAmount, "Bridge: ETH amount too low");
+            require(msg.value >= amount + feeAmount, "Bridge: insufficient ETH for fee");
+            require(amount >= minAmount[address(0)], "Bridge: amount < minAmount");
+            // Deduct fee and lock the rest
             payable(feeRecipient).transfer(feeAmount);
             _lockedETH[msg.sender] += amountAfterFee;
         } else {
@@ -354,6 +354,7 @@ contract QubeBridge is ReentrancyGuard, Pausable, Ownable2Step, AutomationCompat
             msg.sender,
             destAddress,
             amountAfterFee,
+            feeAmount,
             srcChainId,
             destChainId,
             nonce
