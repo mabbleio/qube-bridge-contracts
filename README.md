@@ -37,7 +37,7 @@ The bridge is **operated by Mabble Protocol** and uses a **multisig** for admin 
 | **Chainlink Automation**    | Trusted oracle validation for supported chains.                                               |
 | **Off-Chain Processor**     | Manual validation for non-Chainlink chains.                                                   |
 | **Granular Pausing**        | Pause globally, per-token, or per-chain.                                                      |
-| **Fee System**              | Configurable fees (default: 2%) sent to `feeRecipient`.                                       |
+| **Fee System**              | Configurable fees (default: 1%) sent to `feeRecipient`.                                       |
 | **Emergency Tools**         | Timelocked withdrawals, transaction cancellations, and recovery functions.                     |
 | **Reentrancy Protection**   | Uses OpenZeppelin’s `ReentrancyGuard`.                                                         |
 | **Two-Step Ownership**      | Secure admin handover via `Ownable2Step`.                                                      |
