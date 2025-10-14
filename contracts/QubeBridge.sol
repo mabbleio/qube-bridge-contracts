@@ -11,10 +11,9 @@ import "@chainlink/contracts/src/v0.8/automation/AutomationCompatible.sol";
 import "./interfaces/IMintableERC20.sol";
 
 /**
- * @title QubeBridge - v6.4
+ * @title QubeBridge - v6.5
  * @author Mabble Protocol (@muroko)
  * @notice using OpenZellin Contracts v5
- * @notice QubeBridge is a cross-chain Bridge on supported chains
  * @notice QubeBridge is a Secure Custom Private Bridge operated by Mabble Protocol
  * used solely by QubeSwap Dex for its users to Bridge Assets and Trade.
  * The Bridge work flow relies on Chainlink Automation for trusted validation
@@ -120,13 +119,17 @@ contract QubeBridge is ReentrancyGuard, Pausable, Ownable2Step, AutomationCompat
         address indexed from,
         address indexed to,
         uint256 amount,
-        uint256 toChainId
+        uint256 fromChainId,
+        uint256 toChainId,
+        uint256 nonce
     );
     event BridgeCompleted(
         address indexed tokenAddress,
         address indexed executor,
         address indexed to,
-        uint256 amount
+        uint256 amount,
+        uint256 fromChainId,
+        bytes32 srcTxHash
     );
 
     // --- New Event for Chainlink Automation ---
@@ -351,7 +354,9 @@ contract QubeBridge is ReentrancyGuard, Pausable, Ownable2Step, AutomationCompat
             msg.sender,
             destAddress,
             amountAfterFee,
-            destChainId
+            srcChainId,
+            destChainId,
+            nonce
         );
 
         // Generate txHash and store transaction details
@@ -405,10 +410,13 @@ contract QubeBridge is ReentrancyGuard, Pausable, Ownable2Step, AutomationCompat
     function transferToken(
         address tokenAddress,
         address recipient,
-        uint256 amount 
+        uint256 amount,
+        uint256 fromChainId,
+        uint256 nonce
     ) external nonReentrant whenNotPaused {
-        uint256 fromChainId; bytes32 srcTxHash; uint256 nonce;
+        bytes32 srcTxHash;
         // Validations
+        require(isSupportedChain(fromChainId), "Bridge: unsupported source chain");
         require(recipient != address(0), "Bridge: invalid recipient");
         require(amount >= minAmount[tokenAddress], "Bridge: amount < minAmount");
 
@@ -423,13 +431,13 @@ contract QubeBridge is ReentrancyGuard, Pausable, Ownable2Step, AutomationCompat
                 (tokenAddress != address(0) && _lockedTokens[recipient][tokenAddress] >= amount),
                 "Bridge: insufficient balance"
         );
-        require(tokenAddress == address(0) || isSupportedToken(tokenAddress), 
-               "Bridge: invalid token"
+        require(isSupportedToken(tokenAddress) || tokenAddress == address(0), 
+                "Bridge: unsupported token"
         );
+        // Check if the validation is still within the timeout period
         require(block.timestamp <= txHashToChainId[srcTxHash] + oracleTimeout,
                 "Bridge: validation expired"
         );
-        require(isSupportedToken(tokenAddress) || tokenAddress == address(0), "Bridge: unsupported token");
 
         // Check and update nonce
         require(nonce == nonces[recipient][fromChainId][srcChainId], "Bridge: invalid nonce");
@@ -469,7 +477,9 @@ contract QubeBridge is ReentrancyGuard, Pausable, Ownable2Step, AutomationCompat
             tokenAddress,
             msg.sender,
             recipient,
-            amount
+            amount,
+            fromChainId,
+            srcTxHash
         );
     }
 
