@@ -11,7 +11,7 @@ import "@chainlink/contracts/src/v0.8/automation/AutomationCompatible.sol";
 import "./interfaces/IMintableERC20.sol";
 
 /**
- * @title QubeBridge - v6.6
+ * @title QubeBridge - v6.7
  * @author Mabble Protocol (@muroko)
  * @notice using OpenZellin Contracts v5
  * @notice QubeBridge is a Secure Custom Private Bridge operated by Mabble Protocol
@@ -180,6 +180,7 @@ contract QubeBridge is ReentrancyGuard, Pausable, Ownable2Step, AutomationCompat
     event EmergencyWithdrawal(address indexed user, address indexed token, uint256 amount);
     event UnpauseDelayUpdated(uint256 oldDelay, uint256 newDelay);
     event TokenRecovered(address indexed token, address indexed to, uint256 amount);
+    event TokensLocked(address indexed token, address indexed user, uint256 amount);
     /// @notice Emitted when a controller initiates a cancellation timelock for a pending transaction.
     /// @param txHash The hash of the transaction to be cancelled.
     /// @param cancelAvailableAt The timestamp when cancellation becomes available.
@@ -295,11 +296,12 @@ contract QubeBridge is ReentrancyGuard, Pausable, Ownable2Step, AutomationCompat
 
     // --- Core Functions ---
 
-    /// @notice Bridge tokens from the source chain to the destination chain.
-    /// @param tokenAddress The address of the token to bridge.
-    /// @param destAddress The address to receive the tokens on the destination chain.
-    /// @param amount The amount of tokens to bridge.
-    /// @param destChainId The chain ID of the destination chain.
+    /// @notice Bridge tokens to another chain.
+    /// @dev Users MUST call `IERC20(tokenAddress).approve(address(this), amount)` before bridging ERC20 tokens.
+    /// @param tokenAddress The token to bridge (use address(0) for ETH).
+    /// @param destAddress Recipient on the destination chain.
+    /// @param amount Amount to bridge (including fee).
+    /// @param destChainId Destination chain ID.
     function bridge(
         address tokenAddress,
         address destAddress,
@@ -313,8 +315,9 @@ contract QubeBridge is ReentrancyGuard, Pausable, Ownable2Step, AutomationCompat
         uint256 deadline = block.timestamp + 15 minutes;
         // Calculate fee and enforce minAmount
         uint256 feeAmount = Math.mulDiv(amount, feePercent, FEE_DIVISOR);
-        require(feeAmount <= amount, "Bridge: fee exceeds amount");  // Sanity check
         uint256 amountAfterFee = amount - feeAmount;
+        require(feeAmount <= amount, "Bridge: fee exceeds amount");  // Sanity check
+        require(msg.value >= amount + feeAmount, "Bridge: insufficient Funds for fee");
         
         // Validate amounts
         require(amount >= minAmount[tokenAddress], "Bridge: amount < minAmount");
@@ -329,22 +332,27 @@ contract QubeBridge is ReentrancyGuard, Pausable, Ownable2Step, AutomationCompat
 
         // Process token/ETH transfer
         if (tokenAddress == address(0)) {
-            require(msg.value >= amount + feeAmount, "Bridge: insufficient ETH for fee");
             require(amount >= minAmount[address(0)], "Bridge: amount < minAmount");
             // Deduct fee and lock the rest
             payable(feeRecipient).transfer(feeAmount);
             _lockedETH[msg.sender] += amountAfterFee;
+            // Optional: Refund overpayment
+            uint256 refundAmount = msg.value - (amount + feeAmount);
+            if (refundAmount > 0) {
+                payable(msg.sender).transfer(refundAmount); // Refund excess Native Token
+            }
         } else {
             if (_isTokenMintable(tokenAddress)) {
                 require(IERC20(tokenAddress).balanceOf(msg.sender) >= amount, "Bridge: insufficient balance");
                 IERC20(tokenAddress).safeTransferFrom(msg.sender, feeRecipient, feeAmount);
                 IMintableERC20(tokenAddress).burn(msg.sender, amountAfterFee);
             } else {
-                uint256 balanceBefore = IERC20(tokenAddress).balanceOf(address(this));
+                // For non-mintable tokens, transfer the tokens to the bridge contract
+                require(IERC20(tokenAddress).balanceOf(msg.sender) >= amount, "Bridge: insufficient balance");
+                uint256 userAllowance = IERC20(tokenAddress).allowance(msg.sender, address(this));
+                require(userAllowance >= amount, "Bridge: insufficient allowance");
                 IERC20(tokenAddress).safeTransferFrom(msg.sender, address(this), amount);
                 IERC20(tokenAddress).safeTransfer(feeRecipient, feeAmount);
-                uint256 balanceAfter = IERC20(tokenAddress).balanceOf(address(this));
-                require(balanceAfter - balanceBefore >= amountAfterFee, "Bridge: transfer failed");
                 _lockedTokens[msg.sender][tokenAddress] += amountAfterFee;
             }
         }
@@ -415,7 +423,13 @@ contract QubeBridge is ReentrancyGuard, Pausable, Ownable2Step, AutomationCompat
         uint256 fromChainId,
         uint256 nonce
     ) external nonReentrant whenNotPaused {
-        bytes32 srcTxHash;
+        bytes32 srcTxHash = _generateTxHash(
+            tokenAddress,
+            recipient,
+            amount,
+            fromChainId,
+            nonce
+        );
         // Validations
         require(isSupportedChain(fromChainId), "Bridge: unsupported source chain");
         require(recipient != address(0), "Bridge: invalid recipient");
@@ -565,21 +579,17 @@ contract QubeBridge is ReentrancyGuard, Pausable, Ownable2Step, AutomationCompat
     // Helper function to generate transaction hash
     function _generateTxHash(
         address tokenAddress,
-        address sender,
         address destAddress,
         uint256 amount,
         uint256 fromChainId,
-        uint256 toChainId,
         uint256 nonce
     ) internal pure returns (bytes32) {
         return keccak256(
             abi.encode(
                 tokenAddress,
-                sender,
                 destAddress,
                 amount,
                 fromChainId,
-                toChainId,
                 nonce
             )
         );
@@ -973,6 +983,13 @@ contract QubeBridge is ReentrancyGuard, Pausable, Ownable2Step, AutomationCompat
     }
 
     // --- Liquidity Pool Management ---
+
+    /// @notice Get the liquidity pool balance for a token.
+    /// @param token Address of the token.
+    /// @return The available liquidity for the token.
+    function getLiquidityPoolBalance(address token) external view returns (uint256) {
+        return _liquidityPool[token];
+    }
 
     /// @notice Deposit tokens into the liquidity pool (for non-mintable tokens).
     /// @dev Only callable by multisig or by controller.
