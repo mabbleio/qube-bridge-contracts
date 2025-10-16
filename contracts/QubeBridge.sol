@@ -11,7 +11,7 @@ import "@chainlink/contracts/src/v0.8/automation/AutomationCompatible.sol";
 import "./interfaces/IMintableERC20.sol";
 
 /**
- * @title QubeBridge - v6.7
+ * @title QubeBridge - v6.8
  * @author Mabble Protocol (@muroko)
  * @notice using OpenZellin Contracts v5
  * @notice QubeBridge is a Secure Custom Private Bridge operated by Mabble Protocol
@@ -41,6 +41,7 @@ contract QubeBridge is ReentrancyGuard, Pausable, Ownable2Step, AutomationCompat
     address public multisig;  // Managed by Mabble Protocol for admin operations
     address public feeRecipient;  // Address to receive bridge fees
     uint256 public feePercent = 100; // Default bridge Fee in basis points (e.g., 1% = 100)
+    uint256 public constant MIN_FEE = 1000; // 1000 wei (0.000000001 ETH)
     uint256 public emergencyWithdrawLockUntil;
     uint256 public constant SOFT_MAX_TOKENS = 100;  // Soft Max Supported Tokens
     uint256 public constant FEE_DIVISOR = 10_000;
@@ -316,6 +317,7 @@ contract QubeBridge is ReentrancyGuard, Pausable, Ownable2Step, AutomationCompat
         // Calculate fee and enforce minAmount
         uint256 feeAmount = Math.mulDiv(amount, feePercent, FEE_DIVISOR);
         uint256 amountAfterFee = amount - feeAmount;
+        require(feeAmount >= MIN_FEE || amount == 0, "Bridge: fee too small");
         require(feeAmount <= amount, "Bridge: fee exceeds amount");  // Sanity check
         require(msg.value >= amount + feeAmount, "Bridge: insufficient Funds for fee");
         
@@ -505,6 +507,48 @@ contract QubeBridge is ReentrancyGuard, Pausable, Ownable2Step, AutomationCompat
 
     function getSupportedChainIds() external view returns (uint256[] memory) {
         return _supportedChainIds.values();
+    }
+
+    /// @notice Calculates the maximum bridgeable amount for a token/ETH after accounting for fees.
+    /// @dev For ETH: maxAmount = userBalance - fee.
+    /// @dev For ERC20: maxAmount = userBalance (fee is deducted during bridging).
+    /// @param tokenAddress The token address (use address(0) for ETH).
+    /// @param user The user's address.
+    /// @return The maximum amount that can be bridged (after fees and constraints).
+    function getMaxBridgeableAmount(
+        address tokenAddress,
+        address user
+    ) external view returns (uint256) {
+        if (tokenAddress == address(0)) {
+            // For ETH: maxAmount = userBalance - fee
+            uint256 userBalance = user.balance;
+            if (userBalance == 0) return 0;
+
+            // Calculate fee: fee = (amount * feePercent) / FEE_DIVISOR
+            // But since fee is deducted from the total, we solve for:
+            // maxAmount = userBalance - fee
+            //           = userBalance - (maxAmount * feePercent / FEE_DIVISOR)
+            // => maxAmount = (userBalance * FEE_DIVISOR) / (FEE_DIVISOR + feePercent)
+            uint256 maxAmount = (userBalance * FEE_DIVISOR) / (FEE_DIVISOR + feePercent);
+
+            // Ensure maxAmount >= minAmount[address(0)] and leaves enough for gas (handled by frontend)
+            if (maxAmount < minAmount[address(0)] || maxAmount == 0) {
+                return 0;
+            }
+            return maxAmount;
+        } else {
+            // For ERC20: maxAmount = userBalance (fee is deducted during bridging)
+            uint256 userBalance = IERC20(tokenAddress).balanceOf(user);
+            if (userBalance == 0 || !isSupportedToken(tokenAddress)) {
+                return 0;
+            }
+
+            // Check minAmount constraint
+            if (userBalance < minAmount[tokenAddress]) {
+                return 0;
+            }
+            return userBalance;
+        }
     }
 
     // --- Chainlink Automation Callbacks ---
