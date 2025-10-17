@@ -11,7 +11,7 @@ import "@chainlink/contracts/src/v0.8/automation/AutomationCompatible.sol";
 import "./interfaces/IMintableERC20.sol";
 
 /**
- * @title QubeBridge - v6.8
+ * @title QubeBridge - v6.9
  * @author Mabble Protocol (@muroko)
  * @notice using OpenZellin Contracts v5
  * @notice QubeBridge is a Secure Custom Private Bridge operated by Mabble Protocol
@@ -41,10 +41,10 @@ contract QubeBridge is ReentrancyGuard, Pausable, Ownable2Step, AutomationCompat
     address public multisig;  // Managed by Mabble Protocol for admin operations
     address public feeRecipient;  // Address to receive bridge fees
     uint256 public feePercent = 100; // Default bridge Fee in basis points (e.g., 1% = 100)
-    uint256 public constant MIN_FEE = 1000; // 1000 wei (0.000000001 ETH)
+    uint256 private constant MIN_FEE = 1000; // 1000 wei (0.000000001 ETH)
     uint256 public emergencyWithdrawLockUntil;
-    uint256 public constant SOFT_MAX_TOKENS = 100;  // Soft Max Supported Tokens
-    uint256 public constant FEE_DIVISOR = 10_000;
+    uint256 private constant SOFT_MAX_TOKENS = 100;  // Soft Max Supported Tokens
+    uint256 private constant FEE_DIVISOR = 10_000;
     uint256 public unpauseDelay = 48 hours;
     uint256 private _maxPendingTransactions = 200;
     uint256 private _unpauseTime;
@@ -340,7 +340,7 @@ contract QubeBridge is ReentrancyGuard, Pausable, Ownable2Step, AutomationCompat
             _lockedETH[msg.sender] += amountAfterFee;
             // Optional: Refund overpayment
             uint256 refundAmount = msg.value - (amount + feeAmount);
-            if (refundAmount > 0) {
+            if (refundAmount != 0) {
                 payable(msg.sender).transfer(refundAmount); // Refund excess Native Token
             }
         } else {
@@ -563,7 +563,7 @@ contract QubeBridge is ReentrancyGuard, Pausable, Ownable2Step, AutomationCompat
         uint256[] memory chains = _supportedChainIds.values();
         uint256 maxChecks = Math.min(chains.length, 10);  // Prevent gas spikes
 
-        for (uint256 i = 0; i < maxChecks; i++) {
+        for (uint256 i = 0; i < maxChecks; ++i) {
             uint256 chainId = chains[i];
             if (!chainlinkSupportedChains[chainId]) continue;
 
@@ -611,7 +611,7 @@ contract QubeBridge is ReentrancyGuard, Pausable, Ownable2Step, AutomationCompat
     // Helper function to find pending transactions
     function _findPendingTransaction(uint256 chainId) internal view returns (bytes32) {
         uint256 length = _pendingTransactions.length;
-        for (uint256 i = 0; i < length; i++) {
+        for (uint256 i = 0; i < length; ++i) {
             bytes32 txHash = _pendingTransactions[i];
             if (txHashToChainId[txHash] == chainId && !oracleValidations[txHash]) {
                 return txHash;
@@ -865,7 +865,7 @@ contract QubeBridge is ReentrancyGuard, Pausable, Ownable2Step, AutomationCompat
 
         uint256 lockedBalance = 0;
         uint256 supportedTokensLength = _supportedTokens.length();  // Cache
-        for (uint256 i = 0; i < supportedTokensLength; i++) {
+        for (uint256 i = 0; i < supportedTokensLength; ++i) {
             lockedBalance += _lockedTokens[address(this)][_supportedTokens.at(i)];
         }
         IERC20(token).safeTransfer(to, amount);
@@ -893,7 +893,7 @@ contract QubeBridge is ReentrancyGuard, Pausable, Ownable2Step, AutomationCompat
         _cancelTimelocks[txHash] = block.timestamp + 12 hours;
         emit PendingTxCancelInitiated(txHash, block.timestamp + 12 hours);
 
-        TxDetails memory details = _txHashDetails[txHash];
+        TxDetails storage details = _txHashDetails[txHash];
         // Refund the user (not the caller, since the controller might be calling)
         if (details.token == address(0)) {
             require(_lockedETH[details.user] >= details.amount, "Bridge: insufficient ETH");
