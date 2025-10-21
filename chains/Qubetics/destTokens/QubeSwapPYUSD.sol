@@ -21,9 +21,9 @@ contract QubeSwapPYUSD is ERC20, ERC20Permit, AccessControl, ReentrancyGuard {
     bytes32 public constant BRIDGE_ROLE = keccak256("BRIDGE_ROLE");
 
     // --- Constants ---
-    string private constant _NAME = "QubeSwap PYUSD";
+    string private constant _NAME = "QubeSwapPYUSD";
     string private constant _SYMBOL = "PYUSD";
-    uint8 private constant _DECIMALS = 18;
+    uint8 private constant _DECIMALS = 6;
 
     // --- Events ---
     event Mint(address indexed to, uint256 amount);
