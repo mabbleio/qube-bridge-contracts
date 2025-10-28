@@ -6,7 +6,6 @@ import "@openzeppelin/contracts/token/ERC20/extensions/ERC20Permit.sol";
 import "@openzeppelin/contracts/access/AccessControl.sol";
 import "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
-import "https://github.com/mabbleio/contract-deps/blob/main/interfaces/IMintableERC20.sol";
 
 contract QubeSwapUSDC is ERC20, ERC20Permit, AccessControl, ReentrancyGuard {
     using ECDSA for bytes32;
@@ -95,12 +94,5 @@ contract QubeSwapUSDC is ERC20, ERC20Permit, AccessControl, ReentrancyGuard {
         uint256 amount
     ) public override returns (bool) {
         return super.transferFrom(from, to, amount);
-    }
-
-    function supportsInterface(bytes4 interfaceId) public view virtual override returns (bool) {
-        return
-            interfaceId == type(IERC165).interfaceId ||
-            interfaceId == type(IMintableERC20).interfaceId ||
-            super.supportsInterface(interfaceId);
     }
 }
