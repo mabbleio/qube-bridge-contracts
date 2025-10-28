@@ -11,7 +11,7 @@ import "@chainlink/contracts/src/v0.8/automation/AutomationCompatible.sol";
 import "./interfaces/IMintableERC20.sol";
 
 /**
- * @title QubeBridge - v6.9
+ * @title QubeBridge - v7.0
  * @author Mabble Protocol (@muroko)
  * @notice using OpenZellin Contracts v5
  * @notice QubeBridge is a Secure Custom Private Bridge operated by Mabble Protocol
@@ -41,7 +41,7 @@ contract QubeBridge is ReentrancyGuard, Pausable, Ownable2Step, AutomationCompat
     address public multisig;  // Managed by Mabble Protocol for admin operations
     address public feeRecipient;  // Address to receive bridge fees
     uint256 public feePercent = 100; // Default bridge Fee in basis points (e.g., 1% = 100)
-    uint256 private constant MIN_FEE = 1000; // 1000 wei (0.000000001 ETH)
+    //uint256 private constant MIN_FEE = 1000; // 1000 wei (0.000000001 ETH)
     uint256 public emergencyWithdrawLockUntil;
     uint256 private constant SOFT_MAX_TOKENS = 100;  // Soft Max Supported Tokens
     uint256 private constant FEE_DIVISOR = 10_000;
@@ -284,10 +284,6 @@ contract QubeBridge is ReentrancyGuard, Pausable, Ownable2Step, AutomationCompat
 
     /// @dev Set mintable status for a token
     function _setTokenMintable(address token, bool mintable) internal {
-        require(
-            mintable ? IMintableERC20(token).supportsInterface(type(IMintableERC20).interfaceId) : true,
-            "Token does not support IMintableERC20"
-        );
         if (mintable) {
             _tokenFlags[token] |= FLAG_MINTABLE;
         } else {
@@ -317,7 +313,7 @@ contract QubeBridge is ReentrancyGuard, Pausable, Ownable2Step, AutomationCompat
         // Calculate fee and enforce minAmount
         uint256 feeAmount = Math.mulDiv(amount, feePercent, FEE_DIVISOR);
         uint256 amountAfterFee = amount - feeAmount;
-        require(feeAmount >= MIN_FEE || amount == 0, "Bridge: fee too small");
+        //require(feeAmount >= MIN_FEE || amount == 0, "Bridge: fee too small");
         require(feeAmount <= amount, "Bridge: fee exceeds amount");  // Sanity check
         require(msg.value >= amount + feeAmount, "Bridge: insufficient Funds for fee");
         
