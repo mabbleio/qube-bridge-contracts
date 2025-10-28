@@ -6,16 +6,15 @@ import "@openzeppelin/contracts/token/ERC20/extensions/ERC20Permit.sol";
 import "@openzeppelin/contracts/access/AccessControl.sol";
 import "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
-import "https://github.com/mabbleio/contract-deps/blob/main/interfaces/IMintableERC20.sol";
 
-contract QubeSwapTokenDest is ERC20, ERC20Permit, AccessControl, ReentrancyGuard {
+contract PegQubeSwapToken is ERC20, ERC20Permit, AccessControl, ReentrancyGuard {
     using ECDSA for bytes32;
 
     // --- Custom Errors ---
-    error QubeSwapTokenDest__NotMinter();
-    error QubeSwapTokenDest__ExceedsMaxSupply(uint256 currentSupply, uint256 maxSupply);
-    error QubeSwapTokenDest__ZeroAddress();
-    error QubeSwapTokenDest__InsufficientBalance(uint256 balance, uint256 amount);
+    error PegQubeSwapToken__NotMinter();
+    error PegQubeSwapToken__ExceedsMaxSupply(uint256 currentSupply, uint256 maxSupply);
+    error PegQubeSwapToken__ZeroAddress();
+    error PegQubeSwapToken__InsufficientBalance(uint256 balance, uint256 amount);
 
     // --- Roles ---
     bytes32 public constant MINTER_ROLE = keccak256("MINTER_ROLE");
@@ -48,11 +47,11 @@ contract QubeSwapTokenDest is ERC20, ERC20Permit, AccessControl, ReentrancyGuard
      */
     function mint(address to, uint256 amount) external nonReentrant {
         if (!hasRole(MINTER_ROLE, msg.sender) && !hasRole(BRIDGE_ROLE, msg.sender)) {
-            revert QubeSwapTokenDest__NotMinter();
+            revert PegQubeSwapToken__NotMinter();
         }
-        if (to == address(0)) revert QubeSwapTokenDest__ZeroAddress();
+        if (to == address(0)) revert PegQubeSwapToken__ZeroAddress();
         if (totalSupply() + amount > MAX_SUPPLY) {
-            revert QubeSwapTokenDest__ExceedsMaxSupply(totalSupply() + amount, MAX_SUPPLY);
+            revert PegQubeSwapToken__ExceedsMaxSupply(totalSupply() + amount, MAX_SUPPLY);
         }
         _mint(to, amount);
         emit Mint(to, amount);
@@ -65,11 +64,11 @@ contract QubeSwapTokenDest is ERC20, ERC20Permit, AccessControl, ReentrancyGuard
      */
     function burn(address from, uint256 amount) external nonReentrant {
         if (!hasRole(MINTER_ROLE, msg.sender) && !hasRole(BRIDGE_ROLE, msg.sender)) {
-            revert QubeSwapTokenDest__NotMinter();
+            revert PegQubeSwapToken__NotMinter();
         }
-        if (from == address(0)) revert QubeSwapTokenDest__ZeroAddress();
+        if (from == address(0)) revert PegQubeSwapToken__ZeroAddress();
         if (balanceOf(from) < amount) {
-            revert QubeSwapTokenDest__InsufficientBalance(balanceOf(from), amount);
+            revert PegQubeSwapToken__InsufficientBalance(balanceOf(from), amount);
         }
         _burn(from, amount);
         emit Burn(from, amount);
@@ -100,12 +99,5 @@ contract QubeSwapTokenDest is ERC20, ERC20Permit, AccessControl, ReentrancyGuard
         uint256 amount
     ) public override returns (bool) {
         return super.transferFrom(from, to, amount);
-    }
-
-    function supportsInterface(bytes4 interfaceId) public view virtual override returns (bool) {
-        return
-            interfaceId == type(IERC165).interfaceId ||
-            interfaceId == type(IMintableERC20).interfaceId ||
-            super.supportsInterface(interfaceId);
     }
 }
